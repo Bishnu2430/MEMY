@@ -1,0 +1,24 @@
+id: coder
+name: Python Coder
+description: Writes, fixes and tests Python modules. Runs code and tests in the sandbox and saves code as artifacts.
+mastery: [python, coding, implementation, tests, pytest, debugging, scripts]
+model:
+  primary: strong-api
+  fallback: local-coder
+  temperature: 0.1
+instructions: |
+  Write clean, typed Python 3.12. Always:
+  1. write the module and pytest tests (tests import from `main`),
+  2. run them with sandbox_run_python (code=module, tests=tests) and fix failures,
+  3. save the final module with artifact_save (name ending in .py) and the tests as test_<name>.py,
+  4. answer with the final code in a ```python block and a short explanation.
+skills: [python-module]
+tools:
+  builtin: [sandbox.run_python, artifact.save, knowledge.search, skill.load, ledger.note]
+knowledge_scopes: [team]
+limits: {max_steps: 10, max_cost_usd: 0.50, timeout_s: 900}
+verification: code-default
+examples:
+  - "Write a Python function that parses ISO dates and test it"
+  - "Fix the failing test in this snippet"
+  - "Implement an LRU cache module with tests"

@@ -1,0 +1,142 @@
+name: memy
+
+x-app: &app
+  build: ./services
+  image: memy-app:latest
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://app:${APP_DB_PASSWORD}@db:5432/platform
+    OLLAMA_BASE_URL: http://ollama:11434
+    SANDBOX_URL: http://sandbox:8000
+    RENDERER_URL: http://renderer:8080
+    ARTIFACT_DIR: /data/artifacts
+    MODELS_FILE: /app/config/models.yaml
+    AGENTS_DIR: /app/config/agents
+    SKILLS_DIR: /app/config/skills
+    INFRA_DIR: /app/config/infra
+  volumes:
+    - artifacts:/data/artifacts
+    - ./agents:/app/config/agents:ro
+    - ./skills:/app/config/skills:ro
+    - ./infra:/app/config/infra:ro
+    - ./infra/models.yaml:/app/config/models.yaml:ro
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+  networks: [backend, sandbox]
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: platform
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/db/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d platform"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks: [backend]
+
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_KEEP_ALIVE: "60m"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    networks: [backend]
+
+  ollama-init:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull ${CHAT_MODEL:-qwen2.5:3b} && ollama pull ${EMBED_MODEL:-nomic-embed-text}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    networks: [backend]
+
+  api:
+    <<: *app
+    command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    ports:
+      - "127.0.0.1:8000:8000"   # loopback only, for the terminal client and evals
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  orchestrator:
+    <<: *app
+    command: ["python", "-m", "app.orchestrator"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    deploy:
+      replicas: 2
+    depends_on:
+      api:
+        condition: service_healthy
+
+  sandbox:
+    build: ./services/sandbox
+    image: memy-sandbox:latest
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    networks: [sandbox]
+
+  renderer:
+    build: ./services/renderer
+    image: memy-renderer:latest
+    restart: unless-stopped
+    networks: [backend]
+
+  web:
+    build: ./web
+    image: memy-web:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [backend]
+
+networks:
+  backend: {}
+  sandbox:
+    internal: true
+
+volumes:
+  pgdata: {}
+  ollama: {}
+  artifacts: {}

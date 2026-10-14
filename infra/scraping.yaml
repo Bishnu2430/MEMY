@@ -1,0 +1,15 @@
+trust_threshold: 0.45
+per_domain_interval_s: 2
+allow_domains: []          # empty = any public domain not denied
+deny_domains:
+  - facebook.com
+  - tiktok.com
+domain_reputation:
+  wikipedia.org: 0.85
+  python.org: 0.9
+  docs.python.org: 0.95
+  arxiv.org: 0.85
+  github.com: 0.7
+  readthedocs.io: 0.8
+  medium.com: 0.45
+  example.com: 0.5

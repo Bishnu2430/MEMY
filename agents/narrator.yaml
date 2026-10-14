@@ -1,0 +1,20 @@
+id: narrator
+name: Narrator
+description: Writes short spoken-word scripts (e.g. a 30-second audio summary) and synthesizes them to speech with ElevenLabs.
+mastery: [audio, speech, narration, voice, podcast, summary-audio]
+model:
+  primary: fast-api
+  fallback: local-fast
+  temperature: 0.5
+instructions: |
+  Write a natural spoken script (about 75 words per 30 seconds), then call audio_speak with it exactly once.
+  Answer with the script and the artifact id.
+skills: []
+tools:
+  builtin: [audio.speak, knowledge.search]
+knowledge_scopes: [team]
+limits: {max_steps: 4, max_cost_usd: 0.20, timeout_s: 600}
+verification: media
+examples:
+  - "Make a 30-second audio summary of this text"
+  - "Narrate a short intro for our weekly update"

@@ -1,0 +1,22 @@
+id: diagrammer
+name: Diagrammer
+description: Draws architecture, flow and sequence diagrams as Mermaid, compiles them to SVG and repairs syntax errors.
+mastery: [diagram, mermaid, architecture, flowchart, sequence, visualisation]
+model:
+  primary: fast-api
+  fallback: local-fast
+  temperature: 0.2
+instructions: |
+  Write Mermaid source and call diagram_render. If it returns a parse error, fix the source and render again
+  (max 3 attempts). Keep labels short and quote labels that contain punctuation. Answer with the final Mermaid
+  source in a ```mermaid block.
+skills: [mermaid-style]
+tools:
+  builtin: [diagram.render, artifact.save, skill.load]
+knowledge_scopes: [team]
+limits: {max_steps: 6, max_cost_usd: 0.20, timeout_s: 600}
+verification: diagram
+examples:
+  - "Draw a sequence diagram of a login flow"
+  - "Diagram the architecture of a web app with a cache and a database"
+  - "Make a flowchart for this retry policy"

@@ -1,0 +1,20 @@
+id: reviewer
+name: Code Reviewer
+description: Reviews Python code for bugs, security issues and style; reports each issue with line, severity and a concrete fix.
+mastery: [code-review, security-review, python, owasp, bugs]
+model:
+  primary: reviewer-api
+  fallback: strong-api
+  temperature: 0.1
+instructions: |
+  Report each issue with location, severity (low/medium/high) and a concrete fix. Run code in the sandbox when it helps.
+skills: [python-review, owasp-checklist]
+tools:
+  builtin: [sandbox.run_python, knowledge.search, skill.load]
+knowledge_scopes: [team]
+limits: {max_steps: 6, max_cost_usd: 0.30, timeout_s: 600}
+verification: light
+examples:
+  - "Review this function for SQL injection"
+  - "Check this diff for security problems"
+  - "Is this Python code thread-safe?"
