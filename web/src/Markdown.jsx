@@ -6,6 +6,11 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
+import CopyButton from "./copy.jsx";
+
+const LANG_LABEL = { python: "Python", py: "Python", js: "JavaScript", javascript: "JavaScript", jsx: "JSX", ts: "TypeScript",
+  typescript: "TypeScript", tsx: "TSX", bash: "Shell", sh: "Shell", sql: "SQL", json: "JSON", yaml: "YAML", yml: "YAML",
+  html: "HTML", css: "CSS", mermaid: "Mermaid", toml: "TOML", go: "Go", rust: "Rust", java: "Java", diff: "Diff" };
 
 let mermaidPromise = null;
 const loadMermaid = () => {
@@ -38,7 +43,13 @@ export function Mermaid({ code }) {
     </div>
   );
   if (!svg) return <div className="muted small">Rendering diagram…</div>;
-  return <div className="mermaid-box" dangerouslySetInnerHTML={{ __html: svg }} />;
+  return (
+    <div className="mermaid-wrap">
+      <div className="codeblock-bar"><span>Diagram</span><CopyButton text={code} label="Copy source" />
+        <a className="copy-btn" download="diagram.svg" href={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`}>Download SVG</a></div>
+      <div className="mermaid-box" dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
+  );
 }
 
 const toText = (node) =>
@@ -57,7 +68,19 @@ const components = {
     const code = node?.children?.[0];
     const cls = code?.properties?.className || [];
     if (cls.includes("language-mermaid")) return <Mermaid code={toText(code).trim()} />;
-    return <pre {...props}>{children}</pre>;
+    const lang = (cls.find((c) => String(c).startsWith("language-")) || "").replace("language-", "");
+    const text = toText(code).replace(/\n$/, "");
+    const lines = text.split("\n").length;
+    return (
+      <div className="codeblock">
+        <div className="codeblock-bar">
+          <span>{LANG_LABEL[lang] || lang || "Text"}</span>
+          <span className="faint">{lines} line{lines === 1 ? "" : "s"}</span>
+          <CopyButton text={text} label="Copy code" />
+        </div>
+        <pre {...props}>{children}</pre>
+      </div>
+    );
   },
   a({ node, ...props }) {
     return <a target="_blank" rel="noreferrer" {...props} />;

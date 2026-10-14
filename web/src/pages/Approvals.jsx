@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ago, api } from "../api.js";
-import { useInterval } from "../components.jsx";
+import { Status, useInterval } from "../components.jsx";
+import { toolLabel } from "../labels.js";
 
 export default function Approvals() {
   const [items, setItems] = useState([]);
@@ -17,12 +18,12 @@ export default function Approvals() {
   };
   return (
     <div>
-      <div className="page-head"><h2>Approvals</h2><span className="muted">paused side-effecting actions — exact tool and arguments</span></div>
+      <div className="page-head"><h2>Approvals</h2><span className="muted">actions with side effects wait here, showing the exact tool and arguments</span></div>
       {err && <div className="error">{err}</div>}
       {items.length === 0 && <div className="card muted">Nothing waiting for approval.</div>}
       {items.map((a) => (
         <div key={a.id} className="card">
-          <div className="row"><b>@{a.agent_id}</b> wants to call <code>{a.tool}</code>
+          <div className="row"><b>@{a.agent_id}</b> wants to run <b>{toolLabel(a.tool)}</b> <code className="faint">{a.tool}</code>
             <span className="muted small">in <a href={`#/tasks/${a.task_id}`}>{a.task_title}</a> · {ago(a.requested_at)}</span></div>
           <pre>{JSON.stringify(a.args, null, 2)}</pre>
           <button className="primary" onClick={() => decide(a.id, "approve")}>Approve</button>
@@ -31,8 +32,8 @@ export default function Approvals() {
       ))}
       {done.length > 0 && (
         <div className="card"><h3>Recent decisions</h3>
-          <table><tbody>{done.map((a) => (
-            <tr key={a.id}><td><code>{a.tool}</code></td><td>{a.status}</td><td className="small">{JSON.stringify(a.args).slice(0, 80)}</td><td className="muted small">{ago(a.decided_at)}</td></tr>
+          <table><thead><tr><th>Action</th><th>Decision</th><th>Arguments</th><th>When</th></tr></thead><tbody>{done.map((a) => (
+            <tr key={a.id}><td>{toolLabel(a.tool)}</td><td><Status s={a.status} /></td><td className="small">{JSON.stringify(a.args).slice(0, 80)}</td><td className="muted small">{ago(a.decided_at)}</td></tr>
           ))}</tbody></table>
         </div>
       )}

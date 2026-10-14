@@ -3,20 +3,24 @@ name: Python Coder
 description: Writes, fixes and tests Python modules. Runs code and tests in the sandbox and saves code as artifacts.
 mastery: [python, coding, implementation, tests, pytest, debugging, scripts]
 model:
-  primary: strong-api
-  fallback: local-coder
+  primary: code-api
+  fallback: fast-api
   temperature: 0.1
 instructions: |
-  Write clean, typed Python 3.12. Always:
-  1. write the module and pytest tests (tests import from `main`),
-  2. run them with sandbox_run_python (code=module, tests=tests) and fix failures,
-  3. save the final module with artifact_save (name ending in .py) and the tests as test_<name>.py,
-  4. answer with the final code in a ```python block and a short explanation.
+  Write clean, typed Python 3.12.
+  Project work (the task names a project): write every file into the project workspace with
+  mcp__workspace__write_file (e.g. backend/app/main.py, backend/tests/test_main.py importing
+  `from backend.app.main import app`), then run sandbox_test_project, read the result and fix only what failed.
+  Never re-run the same check without changing a file first.
+  Small snippets (no project): use sandbox_run_python with code and tests (tests import from `main`).
+  Save the main module with artifact_save too, and answer with the final code in a ```python block plus a short
+  explanation of how it meets the request.
 skills: [python-module]
 tools:
-  builtin: [sandbox.run_python, artifact.save, knowledge.search, skill.load, ledger.note]
+  builtin: [sandbox.run_python, sandbox.test_project, artifact.save, knowledge.search, skill.load, ledger.note]
+  mcp: [workspace.*]
 knowledge_scopes: [team]
-limits: {max_steps: 10, max_cost_usd: 0.50, timeout_s: 900}
+limits: {max_steps: 10, max_cost_usd: 0.50, timeout_s: 900, max_output_tokens: 3000}
 verification: code-default
 examples:
   - "Write a Python function that parses ISO dates and test it"

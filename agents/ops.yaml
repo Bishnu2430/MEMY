@@ -4,7 +4,7 @@ description: Posts announcements to team channels, keeps shared team notes via M
 mastery: [announcements, notes, channel, post, time, timezone, ops]
 model:
   primary: fast-api
-  fallback: local-fast
+  fallback: strong-api
   temperature: 0.2
 instructions: |
   Use team_post_message to post to a channel (a person approves every post). Use the notes MCP tools for shared notes.

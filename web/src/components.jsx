@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
-import { api, artifactUrl, describe, elapsed, money, num } from "./api.js";
+import { KNOWLEDGE_KIND, STATUS, api, artifactUrl, describe, elapsed, modelLabel, money, num } from "./api.js";
 import Markdown from "./Markdown.jsx";
+import CopyButton from "./copy.jsx";
+import { ARTIFACT_KIND, actorLabel, workerLabel } from "./labels.js";
 
 export function Status({ s }) {
-  return <span className={`status s-${s}`}>{(s || "").replaceAll("_", " ")}</span>;
+  const [label, tip] = STATUS[s] || [(s || "").replaceAll("_", " "), ""];
+  return <span className={`status s-${s}`} title={tip}>{label}</span>;
 }
 
-export function Bar({ value, max }) {
+export function Bar({ value, max, label }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  return <div className="bar"><div style={{ width: `${pct}%` }} className={pct >= 100 ? "over" : pct >= 80 ? "warnbar" : ""} /></div>;
+  return (
+    <div className="bar" title={label || `${Math.round(pct)}%`} role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+      <div style={{ width: `${pct}%` }} className={pct >= 100 ? "over" : pct >= 80 ? "warnbar" : ""} />
+    </div>
+  );
 }
 
 export function useInterval(fn, ms, deps = []) {
@@ -25,33 +32,70 @@ export function useTick(ms = 1000) {
   useEffect(() => { const t = setInterval(() => set((x) => x + 1), ms); return () => clearInterval(t); }, [ms]);
 }
 
+// ---------------- toasts ----------------
+export const toast = (message, kind = "info") => window.dispatchEvent(new CustomEvent("memy-toast", { detail: { message, kind } }));
+
+export function Toasts() {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    const on = (e) => {
+      const id = Math.random();
+      setItems((x) => [...x, { id, ...e.detail }]);
+      setTimeout(() => setItems((x) => x.filter((i) => i.id !== id)), e.detail.kind === "error" ? 7000 : 3500);
+    };
+    window.addEventListener("memy-toast", on);
+    return () => window.removeEventListener("memy-toast", on);
+  }, []);
+  return <div className="toasts" role="status">{items.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.message}</div>)}</div>;
+}
+
+/** Runs an async action with a toast on success/failure. */
+export async function act(fn, ok) {
+  try { const r = await fn(); if (ok) toast(ok, "ok"); return r; } catch (e) { toast(e.message, "error"); throw e; }
+}
+
+export function ConfirmButton({ children, confirm, onConfirm, className = "", ...rest }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => { if (!armed) return; const t = setTimeout(() => setArmed(false), 4000); return () => clearTimeout(t); }, [armed]);
+  return (
+    <button className={`${className} ${armed ? "danger" : ""}`} {...rest}
+      onClick={() => (armed ? (setArmed(false), onConfirm()) : setArmed(true))}>
+      {armed ? confirm || "Click again to confirm" : children}
+    </button>
+  );
+}
+
+// ---------------- live trace ----------------
 /** One live row per active step: agent, model, current operation, elapsed time, live usage. */
 export function LiveStep({ s }) {
   useTick(1000);
   const llm = s.last_llm || {};
   const u = s.usage || {};
   const ev = s.last_event;
-  const busy = ["llm_start", "tool_call", "tool_progress", "review_start", "step_claimed", "resumed_by"].includes(ev?.type)
+  const waiting = ev?.type === "rate_limit_wait";
+  const busy = ["llm_start", "tool_call", "tool_progress", "review_start", "step_claimed", "resumed_by", "rate_limit_wait"].includes(ev?.type)
     || s.status === "reviewing";
   return (
     <div className={`live-step ${s.status}`}>
       <div className="live-head">
         <span className={`pulse ${s.status === "running" || s.status === "reviewing" ? "on" : ""}`} />
         <b>@{s.agent_id}</b>
-        {llm.model && <span className="chip">{llm.model_name || llm.model}</span>}
+        {llm.model && <span className="chip" title={`Model alias ${llm.model}`}>{modelLabel(llm.model, llm.model_name)}</span>}
         <Status s={s.status} />
         <span className="faint small right">{s.key} · {s.title?.slice(0, 56)}</span>
       </div>
-      <div className="live-op">
+      <div className={`live-op ${waiting ? "waiting" : ""}`}>
         {busy && <span className="spinner" />}
-        <span className={busy ? "shimmer" : ""}>{describe(ev) || "Queued — waiting for a worker"}</span>
-        {ev?.created_at && <span className="faint small">{elapsed(ev.created_at)}</span>}
+        <span className={busy && !waiting ? "shimmer" : ""}>{describe(ev) || "Queued — waiting for a free worker"}</span>
+        {ev?.created_at && <span className="faint small">{elapsed(ev.created_at)} ago</span>}
       </div>
-      <div className="live-usage">
-        <span><b>{num(u.tokens_in)}</b> in</span><span><b>{num(u.tokens_out)}</b> out</span>
-        <span><b>{money(u.cost_usd)}</b></span><span><b>{u.llm_calls || 0}</b> model calls</span><span><b>{u.tool_calls || 0}</b> tool calls</span>
+      <div className="live-usage" aria-label="Live usage for this step">
+        <span title="Prompt tokens sent to models"><b>{num(u.tokens_in)}</b> tokens in</span>
+        <span title="Tokens generated by models"><b>{num(u.tokens_out)}</b> tokens out</span>
+        <span title="Estimated cost so far"><b>{money(u.cost_usd)}</b></span>
+        <span><b>{u.llm_calls || 0}</b> model calls</span><span><b>{u.tool_calls || 0}</b> tool calls</span>
         {s.started_at && <span>running {elapsed(s.started_at)}</span>}
-        {s.locked_by && <span className="faint">on {s.locked_by}</span>}
+        {s.locked_by && <span className="faint" title="Worker process executing this step">{workerLabel(s.locked_by)}</span>}
         {s.attempts > 0 && <span className="warn-text">attempt {s.attempts + 1}</span>}
         {s.reassignments > 0 && <span className="warn-text">reassigned</span>}
       </div>
@@ -59,48 +103,118 @@ export function LiveStep({ s }) {
   );
 }
 
-export function ArtifactView({ a }) {
-  const [text, setText] = useState(null);
-  const url = artifactUrl(a.id);
-  useEffect(() => {
-    if (["code", "markdown", "mermaid", "text", "json"].includes(a.kind)) {
-      fetch(url).then((r) => r.text()).then(setText).catch(() => setText("(failed to load)"));
-    }
-  }, [a.id]);
-  let body = null;
-  if (a.kind === "diagram") body = <img src={url} alt={a.name} className="artifact-img" />;
-  else if (a.kind === "audio") body = <audio controls src={url} />;
-  else if (text !== null) {
-    const lang = a.kind === "code" ? "python" : a.kind === "mermaid" ? "mermaid" : a.kind === "json" ? "json" : "";
-    body = a.kind === "markdown" ? <Markdown>{text}</Markdown> : <Markdown>{"```" + lang + "\n" + text + "\n```"}</Markdown>;
-  }
-  return (
-    <div className="artifact">
-      <div className="artifact-head"><b>{a.name}</b> <span className="muted small">{a.kind} · {num(a.size)} bytes</span>
-        <a className="right small" href={url} target="_blank" rel="noreferrer">open</a></div>
-      {body}
-    </div>
-  );
-}
-
 export function EventRow({ e }) {
   const [open, setOpen] = useState(false);
   const p = e.payload || {};
-  const detail = p.content || p.result || p.output || p.correction || p.detail;
+  const detail = p.content || p.result || p.output || p.correction || p.detail || p.excerpt;
   return (
     <div className={`event ev-${e.type}`}>
-      <div className="event-line" onClick={() => setOpen(!open)}>
-        <span className="muted small mono">{new Date(e.created_at).toLocaleTimeString()}</span>
-        <span className="actor">{e.actor?.length > 24 ? e.actor.slice(0, 8) : e.actor}</span>
-        <span>{describe(e)}</span>
-        {p.tokens_in !== undefined && <span className="muted small">· {num(p.tokens_in)}→{num(p.tokens_out)} tok · {p.latency_ms} ms</span>}
+      <div className="event-line" onClick={() => setOpen(!open)} role="button" tabIndex={0}
+        onKeyDown={(k) => k.key === "Enter" && setOpen(!open)} aria-expanded={open}>
+        <span className="faint tiny mono" title={new Date(e.created_at).toLocaleString()}>{new Date(e.created_at).toLocaleTimeString()}</span>
+        <span className="actor">{actorLabel(e.actor)}</span>
+        <span className="grow-text">{describe(e)}</span>
+        {p.tokens_in !== undefined && <span className="faint tiny" title="tokens in → out · latency">{num(p.tokens_in)}→{num(p.tokens_out)} tok · {num(p.latency_ms)} ms</span>}
       </div>
       {open && (
         <div className="event-detail">
           {typeof detail === "string" ? <Markdown>{detail}</Markdown> : null}
-          <pre className="small">{JSON.stringify(p, null, 2)}</pre>
+          <details><summary className="tiny">Raw event data</summary>
+            <div className="answer-actions"><CopyButton text={JSON.stringify(e, null, 2)} label="Copy JSON" /></div>
+            <pre className="small">{JSON.stringify(p, null, 2)}</pre></details>
         </div>
       )}
+    </div>
+  );
+}
+
+export function TraceLegend() {
+  return (
+    <div className="legend" aria-label="Trace legend">
+      <span><i className="dot info" /> model / tool activity</span>
+      <span><i className="dot ok" /> verified / done / knowledge saved</span>
+      <span><i className="dot warn" /> waiting, revision, approval, resume</span>
+      <span><i className="dot bad" /> failure / guard / escalation</span>
+    </div>
+  );
+}
+
+// ---------------- artifacts & media ----------------
+export function Lightbox({ src, alt, onClose }) {
+  useEffect(() => {
+    const on = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [onClose]);
+  return <div className="lightbox" onClick={onClose} role="dialog" aria-label={alt}><img src={src} alt={alt} /></div>;
+}
+
+export function ArtifactView({ a, compact = false }) {
+  const [text, setText] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  const url = artifactUrl(a.id);
+  const isText = ["code", "markdown", "mermaid", "text", "json", "file"].includes(a.kind) && !(a.mime || "").startsWith("application/pdf");
+  useEffect(() => {
+    if (isText && (a.size || 0) < 400000) fetch(url).then((r) => r.text()).then(setText).catch(() => setText("(failed to load)"));
+  }, [a.id]);
+  const meta = a.meta || {};
+  let body = null;
+  if (a.kind === "image" || a.kind === "diagram") {
+    body = <img src={url} alt={meta.description || meta.prompt || a.name} className="artifact-img" onClick={() => setZoom(true)} />;
+  } else if (a.kind === "audio") body = <audio controls preload="metadata" src={url} className="player" />;
+  else if (a.kind === "video") body = <video controls preload="metadata" src={url} className="player video" />;
+  else if (a.kind === "pdf") body = compact ? null : <iframe title={a.name} src={url} className="pdf" />;
+  else if (text !== null) {
+    const ext = a.name.split(".").pop();
+    const lang = a.kind === "mermaid" ? "mermaid" : a.kind === "json" ? "json" : a.kind === "code" ? ext : "";
+    body = a.kind === "markdown" ? <Markdown>{text}</Markdown> : <Markdown>{"```" + lang + "\n" + text + "\n```"}</Markdown>;
+  }
+  const caption = meta.voice ? `voice: ${meta.voice.split(" - ")[0]}` : meta.model ? `model: ${meta.model}` : meta.extraction ? `read by ${meta.extraction}` : "";
+  return (
+    <figure className="artifact">
+      <figcaption className="artifact-head">
+        <b>{a.name}</b>
+        <span className="faint tiny">{ARTIFACT_KIND[a.kind] || a.kind}{a.role === "input" ? " · attached by you" : ""} · {fmtBytes(a.size)}{caption ? ` · ${caption}` : ""}</span>
+        <a className="right small" href={url} download={a.name}>Download</a>
+      </figcaption>
+      {meta.prompt && !compact && <div className="faint small prompt">“{String(meta.prompt).slice(0, 220)}”</div>}
+      {body}
+      {zoom && <Lightbox src={url} alt={a.name} onClose={() => setZoom(false)} />}
+    </figure>
+  );
+}
+
+export const fmtBytes = (n) => (!n ? "0 B" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+export function AttachmentChip({ a, onRemove }) {
+  const icon = { image: "🖼", audio: "🎙", video: "🎬", pdf: "📄", code: "</>", markdown: "📝" }[a.kind] || "📎";
+  return (
+    <span className={`att-chip ${a.uploading ? "uploading" : ""} ${a.error ? "error" : ""}`} title={a.error || a.extraction || a.name}>
+      {a.kind === "image" && a.preview_url ? <img src={a.preview_url} alt="" /> : <span aria-hidden="true">{icon}</span>}
+      <span className="att-name">{a.name}</span>
+      <span className="faint tiny">{a.uploading ? "reading…" : a.error ? "failed" : fmtBytes(a.size)}</span>
+      {onRemove && <button className="ghost x" onClick={onRemove} aria-label={`Remove ${a.name}`}>×</button>}
+    </span>
+  );
+}
+
+// ---------------- knowledge ----------------
+export function KnowledgeList({ items, compact = false }) {
+  if (!items?.length) return <div className="muted small">Nothing recorded yet.</div>;
+  return (
+    <div className="klist">
+      {items.map((k) => (
+        <details key={k.id || k.source_id} className="kitem">
+          <summary>
+            <span className="kkind">{KNOWLEDGE_KIND[k.kind] || k.kind}</span>
+            <span className="ktitle">{k.title}</span>
+            <span className="faint tiny">{k.chunks ?? "—"} chunk{k.chunks === 1 ? "" : "s"} · trust {Number(k.trust_score ?? k.trust ?? 0).toFixed(2)}
+              {k.agent_id ? ` · by @${k.agent_id}` : ""}</span>
+          </summary>
+          {!compact && <div className="kbody"><Markdown>{k.excerpt || ""}</Markdown>
+            <a className="small" href={`#/knowledge/${k.id || k.source_id}`}>Open in Knowledge</a></div>}
+        </details>
+      ))}
     </div>
   );
 }

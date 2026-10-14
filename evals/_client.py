@@ -32,6 +32,10 @@ class Client:
     def team(self, slug: str) -> str:
         return next(t["id"] for t in self.me["teams"] if t["slug"] == slug)
 
+    def status(self, method: str, path: str, **kw) -> int:
+        """HTTP status of a request (used for access-control checks)."""
+        return self.http.request(method, path, **kw).status_code
+
     def get(self, path, **params):
         r = self.http.get(path, params=params)
         r.raise_for_status()

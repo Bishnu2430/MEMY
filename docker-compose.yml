@@ -6,7 +6,7 @@ x-app: &app
   env_file: .env
   environment:
     DATABASE_URL: postgresql://app:${APP_DB_PASSWORD}@db:5432/platform
-    OLLAMA_BASE_URL: http://ollama:11434
+    EMBEDDER_URL: http://embedder:8000
     SANDBOX_URL: http://sandbox:8000
     RENDERER_URL: http://renderer:8080
     ARTIFACT_DIR: /data/artifacts
@@ -45,32 +45,11 @@ services:
     restart: unless-stopped
     networks: [backend]
 
-  ollama:
-    image: ollama/ollama:latest
-    environment:
-      OLLAMA_CONTEXT_LENGTH: "8192"
-      OLLAMA_KEEP_ALIVE: "60m"
-      OLLAMA_MAX_LOADED_MODELS: "2"
-      OLLAMA_NUM_PARALLEL: "1"
-    volumes:
-      - ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
+  embedder:
+    build: ./services/embedder
+    image: memy-embedder:latest
+    mem_limit: 1g
     restart: unless-stopped
-    networks: [backend]
-
-  ollama-init:
-    image: ollama/ollama:latest
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["/bin/sh", "-c", "ollama pull ${CHAT_MODEL:-qwen2.5:3b} && ollama pull ${EMBED_MODEL:-nomic-embed-text}"]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: "no"
     networks: [backend]
 
   api:
@@ -138,5 +117,4 @@ networks:
 
 volumes:
   pgdata: {}
-  ollama: {}
   artifacts: {}

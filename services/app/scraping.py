@@ -78,7 +78,8 @@ async def _robots_ok(client: httpx.AsyncClient, url: str) -> bool:
 
 
 async def fetch_and_store(url: str, *, team_id, purpose: str = "", project: str | None = None,
-                          user_id=None, meta: UsageMeta | None = None, progress=None) -> dict:
+                          user_id=None, meta: UsageMeta | None = None, progress=None, task_id=None, step_id=None,
+                          agent_id: str | None = None) -> dict:
     async def step(msg: str):
         if progress:
             await progress(msg)
@@ -178,6 +179,6 @@ async def fetch_and_store(url: str, *, team_id, purpose: str = "", project: str 
     await step(f"trust {trust} -> {status}; embedding and storing")
     stored = await ingest_text(team_id=team_id, title=title, text=text, kind="url", project=project, url=url,
                                domain=domain, created_by=user_id, trust=trust, status=status, scores=scores,
-                               simhash=sh, meta=meta)
+                               simhash=sh, meta=meta, task_id=task_id, step_id=step_id, agent_id=agent_id)
     return {"ok": True, "source_id": stored["source_id"], "status": status, "trust": trust, "title": title,
             "scores": scores, "content": text[:6000]}

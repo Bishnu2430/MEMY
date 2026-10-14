@@ -43,7 +43,7 @@ async def shortlist(text: str, team_id, k: int = 3, meta: UsageMeta | None = Non
              "examples": (a.get("examples") or [])[:3], "similarity": round(sims.get(a["id"], 0), 4)} for a in ranked]
 
 
-async def route(text: str, team_id, meta: UsageMeta | None = None) -> dict:
+async def route(text: str, team_id, meta: UsageMeta | None = None, on_wait=None) -> dict:
     sl = await shortlist(text, team_id, meta=meta)
     if not sl:
         return {"mode": "none", "agent_id": None, "confidence": 0, "reason": "no invocable agents", "shortlist": []}
@@ -62,7 +62,7 @@ async def route(text: str, team_id, meta: UsageMeta | None = None) -> dict:
     try:
         res = await gateway().chat("router", [
             {"role": "system", "content": "You are a precise request router for a team of AI agents. Answer in JSON."},
-            {"role": "user", "content": prompt}], json_schema=schema, meta=meta, max_tokens=1200, temperature=0)
+            {"role": "user", "content": prompt}], json_schema=schema, meta=meta, max_tokens=1200, temperature=0, on_wait=on_wait)
         d = res.parsed or {}
     except Exception as e:
         d = {"mode": "single", "agent_id": sl[0]["id"], "confidence": 0.4, "reason": f"router model failed: {e}"}

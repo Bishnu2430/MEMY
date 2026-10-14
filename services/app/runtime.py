@@ -15,10 +15,15 @@ from .agents import get_spec
 from .config import settings
 from .context import compile_system, trim_turns
 from .events import emit
-from .gateway import UsageMeta, gateway
+from .gateway import UsageMeta, estimate_tokens, gateway, request_limit
 from .tools import ToolContext, execute, openai_tools, resolve_tools, validate_args
 
 log = logging.getLogger("runtime")
+
+
+TRUNCATED_NOTE = ("Your previous reply was cut off at the output limit, so its tool call was incomplete and was NOT "
+                  "executed. Split the work: write smaller files (under ~120 lines each, e.g. models, routes and services "
+                  "as separate modules) and make one tool call per file.")
 
 
 class StepHalted(Exception):
@@ -88,6 +93,7 @@ def build_graph(ctx: ToolContext, resolved: dict, system: str, budget_chars: int
     primary = spec["model"]["primary"]
     fallback = spec["model"].get("fallback")
     temperature = float(spec["model"].get("temperature", 0.2))
+    max_out = int(spec["limits"].get("max_output_tokens", 1400))
 
     def invalid_calls(calls):
         errs = []
@@ -101,30 +107,58 @@ def build_graph(ctx: ToolContext, resolved: dict, system: str, budget_chars: int
                 errs.append(f"{c['name']}: {err}")
         return errs
 
+    async def on_wait(seconds: float, reason: str):
+        await emit("rate_limit_wait", task_id=task["id"], step_id=step["id"], actor=spec["id"],
+                   payload={"seconds": round(seconds, 1), "reason": reason})
+        await check_guards(task["id"], step["id"], task["team_id"], spec["id"], float(spec["limits"].get("max_cost_usd", 1.0)))
+
     async def model_node(state: StepState):
         await check_guards(task["id"], step["id"], task["team_id"], spec["id"], float(spec["limits"].get("max_cost_usd", 1.0)))
         turns = state.get("turns", 0)
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": step_prompt}]
-        msgs += trim_turns(state.get("messages", []), int(budget_chars * 0.35))
+        msgs += trim_turns(state.get("messages", []), int(budget_chars * 0.3))
         final_only = turns >= max_turns or not tools
         if turns >= max_turns:
             msgs.append({"role": "user", "content": "Turn limit reached. Give your final answer now, without tools."})
-        target = (await gw.resolve_chain(primary))[0]
+        chain = await gw.resolve_chain(primary)
+        target = chain[0]
+        # Keep the whole request inside the smallest per-request cap in the chain (free tiers reject larger ones).
+        cap = int(min(request_limit(chain), 7600) * 0.88)
+        hist = state.get("messages", [])
+        budget = int(budget_chars * 0.3)
+        while estimate_tokens(msgs, None if final_only else tools, max_out) > cap and budget > 600:
+            budget = int(budget * 0.7)
+            msgs = msgs[:2] + trim_turns(hist, budget)
+        while estimate_tokens(msgs, None if final_only else tools, max_out) > cap and len(msgs) > 4:
+            # still too big: drop the oldest assistant turn together with its tool results
+            body = msgs[2:]
+            cut = next((i for i in range(1, len(body)) if body[i].get("role") == "assistant"), len(body))
+            msgs = msgs[:2] + body[cut:]
         await emit("llm_start", task_id=task["id"], step_id=step["id"], actor=spec["id"], payload={
             "model": target["alias"], "model_name": target.get("model"), "provider": target["provider"], "turn": turns + 1,
             "prompt_chars": sum(len(str(m.get("content") or "")) for m in msgs), "tools_offered": 0 if final_only else len(tools)})
         res = await gw.chat(primary, msgs, tools=None if final_only else tools, meta=ctx.meta, temperature=temperature,
-                            max_tokens=1500)
+                            max_tokens=max_out, on_wait=on_wait)
+        if res.truncated and res.tool_calls:
+            # The output limit cut the reply mid tool call: its arguments are incomplete, so never execute it.
+            await emit("output_truncated", task_id=task["id"], step_id=step["id"], actor=spec["id"],
+                       payload={"model": res.alias, "tokens_out": res.tokens_out})
+            res = await gw.chat(primary, msgs + [{"role": "user", "content": TRUNCATED_NOTE}], tools=tools, meta=ctx.meta,
+                                temperature=temperature, on_wait=on_wait, max_tokens=max_out)
+            if res.truncated and res.tool_calls:
+                res.tool_calls, res.content = [], "My output was cut off twice at the output limit; I need to split the work into smaller files."
         errs = invalid_calls(res.tool_calls) if res.tool_calls else []
         if errs:
             # Retry once with the validation error, then fail over to the fallback alias.
             retry_msgs = msgs + [_assistant_msg(res.content, []), {"role": "user", "content":
                                  f"Your tool call was invalid: {'; '.join(errs)}. Available tools: "
                                  f"{', '.join(resolved)}. Call a valid tool with valid arguments, or answer directly."}]
-            res = await gw.chat(primary, retry_msgs, tools=tools, meta=ctx.meta, temperature=temperature)
+            res = await gw.chat(primary, retry_msgs, tools=tools, meta=ctx.meta, temperature=temperature, on_wait=on_wait,
+                                max_tokens=max_out)
             errs = invalid_calls(res.tool_calls) if res.tool_calls else []
             if errs and fallback:
-                res = await gw.chat(fallback, msgs, tools=tools, meta=ctx.meta, temperature=temperature)
+                res = await gw.chat(fallback, msgs, tools=tools, meta=ctx.meta, temperature=temperature, on_wait=on_wait,
+                                    max_tokens=max_out)
                 errs = invalid_calls(res.tool_calls) if res.tool_calls else []
             if errs:
                 await emit("tool_call_invalid", task_id=task["id"], step_id=step["id"], actor=spec["id"],
@@ -148,6 +182,7 @@ def build_graph(ctx: ToolContext, resolved: dict, system: str, budget_chars: int
         for c in calls:
             sig = hashlib.sha1(f"{c['name']}:{json.dumps(c['arguments'], sort_keys=True)}".encode()).hexdigest()[:16]
             counts[sig] = counts.get(sig, 0) + 1
+            c["repeat"] = counts[sig]
             if counts[sig] >= settings.identical_tool_call_limit:
                 raise StepHalted("loop", f"identical call to {c['name'].replace('__', '.')} repeated "
                                          f"{settings.identical_tool_call_limit} times")
@@ -184,6 +219,10 @@ def build_graph(ctx: ToolContext, resolved: dict, system: str, budget_chars: int
                 content = "REJECTED by a human reviewer. Do not retry this action; explain in your final answer."
             else:
                 content = await execute(ctx, t, c["arguments"], call_id)
+            if c.get("repeat") == 2:
+                content = ("NOTE: you already made exactly this call with the same arguments, so the result below is the "
+                           "same as before. Do not repeat it again (a third identical call stops this step): change the "
+                           "inputs, fix the code, or give your final answer.\n\n" + content)
             results.append({"role": "tool", "tool_call_id": c["id"], "content": content})
         return {"messages": results, "call_counts": counts}
 
@@ -207,7 +246,7 @@ async def run_step(step: dict, worker_id: str, resumed_from: str | None = None) 
     meta = UsageMeta(user_id=task["created_by"], team_id=task["team_id"], agent_id=spec["id"], task_id=task["id"],
                      step_id=step["id"])
     ctx = ToolContext(task=task, step=step, spec=spec, meta=meta)
-    resolved = await resolve_tools(spec, task["team_id"])
+    resolved = await resolve_tools(spec, task["team_id"], extra=["attachment.read"] if task.get("attachments") else None)
     chain = await gateway().resolve_chain(spec["model"]["primary"])
     budget_chars = gateway().context_chars(chain[0])
     system = await compile_system(task, step, spec, budget_chars, meta)

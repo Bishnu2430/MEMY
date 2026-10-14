@@ -5,3 +5,4 @@ node_modules/
 web/dist/
 .venv/
 .pytest_cache/
+evals/sim_run.log

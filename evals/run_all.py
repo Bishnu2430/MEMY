@@ -58,6 +58,7 @@ def budget():
     t = c.post("/tasks", {"team_id": c.team("platform"), "text": "@generalist write three paragraphs about databases",
                           "budget_usd": 0.000001})
     t = c.wait(t["id"], timeout=300)
+    c.post(f"/tasks/{t['id']}/cancel")  # clean up: the task stays parked at its budget otherwise
     return t["status"] == "paused_budget", f"status={t['status']} error={t.get('error')}"
 
 

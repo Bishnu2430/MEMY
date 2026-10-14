@@ -13,12 +13,20 @@ from .events import audit, emit
 from .gateway import gateway
 from .gateway import UsageMeta
 from .router import pick_alternative, route
+from .recorder import record_step, record_task
 from .supervisor import plan, review, step_spec, synthesize, verify
-from .tasks import add_steps, create_task, start_single
+from .tasks import add_steps, create_task, files_note, start_single
 from .tools import mcp_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
+
+
+def waiter(task_id, step_id=None):
+    async def on_wait(seconds: float, reason: str):
+        await emit("rate_limit_wait", task_id=task_id, step_id=step_id, actor="gateway",
+                   payload={"seconds": round(seconds, 1), "reason": reason})
+    return on_wait
 
 
 class Orchestrator:
@@ -51,8 +59,8 @@ class Orchestrator:
 
     async def route_task(self, t: dict):
         await self.op_start("routing", "router", t["id"])
-        d = await route(t["request"], t["team_id"], UsageMeta(user_id=t["created_by"], team_id=t["team_id"],
-                                                              agent_id="router", task_id=t["id"]))
+        d = await route(t["request"] + files_note(t), t["team_id"], UsageMeta(user_id=t["created_by"], team_id=t["team_id"],
+                                                              agent_id="router", task_id=t["id"]), on_wait=waiter(t["id"]))
         await db.execute("INSERT INTO routing_log(task_id, team_id, request, shortlist, chosen, mode, confidence, reason)"
                          " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", t["id"], t["team_id"], t["request"],
                          db.J([{"id": a["id"], "similarity": a["similarity"]} for a in d["shortlist"]]),
@@ -74,7 +82,7 @@ class Orchestrator:
 
     async def plan_task(self, t: dict):
         await self.op_start("planning", "supervisor", t["id"])
-        p = await plan(t, hint={k: (t.get("router") or {}).get(k) for k in ("agent_id", "reason")})
+        p = await plan(t, hint={k: (t.get("router") or {}).get(k) for k in ("agent_id", "reason")}, on_wait=waiter(t["id"]))
         await db.execute("UPDATE tasks SET goal=%s, acceptance=%s, updated_at=now() WHERE id=%s",
                          p["goal"], db.J(p["acceptance"]), t["id"])
         await add_steps(t["id"], p["steps"])
@@ -107,7 +115,7 @@ class Orchestrator:
         rev = {"verdict": "revise", "issues": [], "notes": "skipped: deterministic checks failed", "llm": False}
         if ver["passed"]:
             try:
-                rev = await review(t, s, spec, ver)
+                rev = await review(t, s, spec, ver, on_wait=waiter(t["id"], s["id"]))
             except Exception as e:
                 rev = {"verdict": "accept", "issues": [], "notes": f"reviewer unavailable: {e}", "llm": False}
         high = [i for i in rev.get("issues", []) if i.get("severity") == "high"]
@@ -119,6 +127,7 @@ class Orchestrator:
         if accepted:
             await db.execute("UPDATE task_steps SET status='done', finished_at=now() WHERE id=%s", s["id"])
             await emit("step_done", task_id=t["id"], step_id=s["id"], payload={"key": s["key"], "agent": s["agent_id"]})
+            await record_step(t, dict(await db.fetchrow("SELECT * FROM task_steps WHERE id=%s", s["id"])))
             return
         failed = [f"{c['name']}: {c['detail']}" for c in ver["checks"] if not c["ok"]]
         issues = [f"[{i.get('severity')}] {i.get('description')} -> fix: {i.get('fix', '')}" for i in rev.get("issues", [])]
@@ -132,7 +141,7 @@ class Orchestrator:
         if s["attempts"] < limit:
             att = s["attempts"] + 1
             await db.execute("UPDATE task_steps SET status='ready', attempts=%s, correction=%s, thread_id=%s, output=NULL,"
-                             " error=NULL, locked_by=NULL WHERE id=%s", att, correction, f"{s['id']}:a{att}", s["id"])
+                             " error=NULL, locked_by=NULL WHERE id=%s", att, correction, f"{s['id']}:{uuid.uuid4().hex[:10]}", s["id"])
             await emit("step_revision", task_id=s["task_id"], step_id=s["id"], actor="supervisor",
                        payload={"attempt": att, "reason": reason, "correction": correction})
             return
@@ -148,7 +157,7 @@ class Orchestrator:
                     "UPDATE task_steps SET status='ready', agent_id=%s, agent_version=%s, attempts=0,"
                     " reassignments=reassignments+1, agents_tried=array_append(agents_tried, %s), correction=%s,"
                     " thread_id=%s, output=NULL, error=NULL, locked_by=NULL WHERE id=%s",
-                    new, spec.get("version"), new, correction, f"{s['id']}:r{s['reassignments'] + 1}", s["id"])
+                    new, spec.get("version"), new, correction, f"{s['id']}:{uuid.uuid4().hex[:10]}", s["id"])
                 await emit("step_reassigned", task_id=s["task_id"], step_id=s["id"], actor="supervisor",
                            payload={"from": s["agent_id"], "to": new, "reason": f"{reason}: {alt.get('reason', '')}"})
                 return
@@ -175,17 +184,13 @@ class Orchestrator:
         steps = await db.fetch("SELECT * FROM task_steps WHERE task_id=%s ORDER BY ord", t["id"])
         if len(steps) > 1:
             await self.op_start("synthesis", "supervisor", t["id"])
-        result = await synthesize(t, steps)
-        await db.execute("UPDATE tasks SET status='completed', result=%s, completed_at=now(), updated_at=now() WHERE id=%s",
-                         result, t["id"])
+        result = await synthesize(t, steps, on_wait=waiter(t["id"]))
+        await db.execute("UPDATE tasks SET result=%s, updated_at=now() WHERE id=%s", result, t["id"])
+        await emit("recording_start", task_id=t["id"], actor="recorder", payload={"model": "bulk"})
+        await record_task(t, steps, result, on_wait=waiter(t["id"]))
+        await db.execute("UPDATE tasks SET status='completed', completed_at=now(), updated_at=now() WHERE id=%s", t["id"])
         from .tasks import task_cost
         await emit("task_completed", task_id=t["id"], actor="supervisor", payload={"cost": await task_cost(t["id"])})
-        try:
-            await knowledge.ingest_text(team_id=t["team_id"], title=f"Task summary: {t['title']}", project=t["project"],
-                                        text=f"Request: {t['request']}\n\nResult:\n{result[:4000]}", kind="task_summary",
-                                        created_by=t["created_by"], trust=0.7)
-        except Exception as e:
-            log.warning("task summary ingest failed: %s", e)
 
     # ---------------- guards ----------------
     async def guards(self):
@@ -202,6 +207,13 @@ class Orchestrator:
         for t in over:
             await db.execute("UPDATE tasks SET status='needs_attention', error='step limit per task reached' WHERE id=%s", t["id"])
             await emit("halted", task_id=t["id"], payload={"guard": "steps_per_task", "limit": settings.max_steps_per_task})
+        # Orphans: a step can never outlive its task. Anything unfinished under a finished task is closed.
+        orphans = await db.fetch(
+            "UPDATE task_steps s SET status='cancelled', locked_by=NULL, lease_until=NULL FROM tasks t"
+            " WHERE s.task_id=t.id AND t.status IN ('cancelled','completed','failed')"
+            " AND s.status NOT IN ('done','cancelled','escalated') RETURNING s.id, s.task_id")
+        for o in orphans:
+            await emit("step_cancelled", task_id=o["task_id"], step_id=o["id"], payload={"reason": "task already finished"})
         # Steps paused by the kill switch resume when the switch is lifted.
         await db.execute(
             "UPDATE task_steps s SET status='ready' FROM tasks t WHERE s.task_id=t.id AND s.status='paused'"

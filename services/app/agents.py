@@ -30,7 +30,8 @@ SPEC_SCHEMA = {
             "mcp": {"type": "array", "items": {"type": "string"}}}},
         "knowledge_scopes": {"type": "array", "items": {"type": "string"}},
         "limits": {"type": "object", "properties": {
-            "max_steps": {"type": "integer"}, "max_cost_usd": {"type": "number"}, "timeout_s": {"type": "integer"}}},
+            "max_steps": {"type": "integer"}, "max_cost_usd": {"type": "number"}, "timeout_s": {"type": "integer"},
+            "max_output_tokens": {"type": "integer"}}},
         "approval_required": {"type": "array", "items": {"type": "string"}},
         "verification": {"enum": ["none", "light", "code-default", "research", "diagram", "media", "strict"]},
         "examples": {"type": "array", "items": {"type": "string"}},
@@ -163,9 +164,19 @@ async def seed_from_files(user_id=None):
         team_id = None
         if spec.get("team"):
             team_id = await db.fetchval("SELECT id FROM teams WHERE slug=%s", spec["team"])
-        if cur is None:
+        file_hash = hashlib.sha256(text.encode()).hexdigest()
+        seed_hash = await db.fetchval("SELECT seed_hash FROM agents WHERE id=%s", spec["id"])
+        stale, file_changed = False, False
+        if cur is not None:
+            old = parse_spec(cur["yaml"])
+            stale = any(a and a not in gateway().models for a in (old["model"]["primary"], old["model"].get("fallback")))
+            # A changed seed file updates the agent only if nobody edited it in the UI since the last seed.
+            cur_hash = hashlib.sha256(cur["yaml"].encode()).hexdigest()
+            file_changed = file_hash != cur_hash and (seed_hash is None or seed_hash == cur_hash)
+        if cur is None or stale or file_changed:
             await save_version(text, user_id, team_id=team_id)
-            log.info("seeded agent %s", spec["id"])
+            log.info("seeded agent %s%s", spec["id"], " (updated from file)" if cur is not None else "")
+        await db.execute("UPDATE agents SET seed_hash=%s WHERE id=%s", file_hash, spec["id"])
 
 
 async def refresh_missing_cards():

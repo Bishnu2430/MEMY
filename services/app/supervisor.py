@@ -10,10 +10,11 @@ from .agents import get_spec
 from .config import settings
 from .gateway import UsageMeta, gateway
 from .router import invocable_agents
+from .tasks import files_note
 from .tools import render_mermaid
 
 
-async def plan(task: dict, hint: dict | None = None) -> dict:
+async def plan(task: dict, hint: dict | None = None, on_wait=None) -> dict:
     agents = await invocable_agents(task["team_id"])
     ids = [a["id"] for a in agents]
     catalog = "\n".join(f"- {a['id']}: {a['description']} (mastery: {', '.join(a.get('mastery') or [])})" for a in agents)
@@ -33,9 +34,9 @@ async def plan(task: dict, hint: dict | None = None) -> dict:
          "done by exactly one agent and one agent normally gets one step (e.g. the coder writes AND tests the code in a "
          "single step). Never add separate review, testing or verification steps: every step is verified automatically. A step can read the outputs of the steps listed in its depends_on; steps without "
          "dependencies run in parallel. Keys are s1, s2, ... Instructions must be self-contained."},
-        {"role": "user", "content": f"Agents:\n{catalog}\n\nRequest:\n<request>\n{task['request']}\n</request>"
+        {"role": "user", "content": f"Agents:\n{catalog}\n\nRequest:\n<request>\n{task['request']}{files_note(task)}\n</request>"
          + (f"\n\nRouter hint: {json.dumps(hint)}" if hint else "")}],
-        json_schema=schema, meta=meta, max_tokens=3500, temperature=0.1)
+        json_schema=schema, meta=meta, max_tokens=3500, temperature=0.1, on_wait=on_wait)
     p = res.parsed or {}
     raw = (p.get("steps") or [])[:4]
     keymap = {(s.get("key") or f"s{i + 1}"): f"s{i + 1}" for i, s in enumerate(raw)}
@@ -83,12 +84,24 @@ async def verify(task: dict, step: dict, spec: dict) -> dict:
         return result
     check("non_empty_output", len(out.strip()) > 0 and not out.startswith("(the agent returned an empty answer)"))
 
-    if profile in ("code-default", "strict"):
+    project_files = {}
+    if profile in ("code-default", "strict") and task.get("project"):
+        from .tools import workspace_files
+        project_files = workspace_files(task["team_id"], task.get("project"))
+    if profile in ("code-default", "strict") and any(re.search(r"(^|/)test_[^/]*\.py$", p) for p in project_files):
+        # The project has its own test suite: run it exactly as a developer would.
+        from .tools import sandbox_check
+        r = await sandbox_check(project_files)
+        result["sandbox"] = r
+        check("static_errors", not r.get("ruff", {}).get("errors"), r.get("ruff", {}).get("errors"))
+        check("security_high", not [i for i in r.get("bandit", {}).get("issues", []) if i.get("severity") == "HIGH"], r.get("bandit"))
+        check("tests", r.get("tests", {}).get("passed", False), r.get("tests", {}).get("output", ""))
+    elif profile in ("code-default", "strict"):
         code, tests = None, None
         for a in arts:
             if a["kind"] == "code":
                 body = open(a["storage_path"]).read()
-                if a["name"].startswith("test_"):
+                if a["name"].startswith("test_") or "_test_" in a["name"] or a["name"].endswith("_test.py"):
                     tests = body
                 else:
                     code = body
@@ -145,14 +158,17 @@ async def verify(task: dict, step: dict, spec: dict) -> dict:
         check("diagram_rendered", has_svg, "no compiled diagram artifact")
 
     if profile == "media":
-        has_audio = any(a["kind"] == "audio" for a in arts)
-        has_script = any(a["name"].startswith("narration_script") for a in arts)
-        check("media_or_script", has_audio or has_script or len(out) > 40,
-              "no audio artifact" + ("" if has_audio else " (script only)"))
+        has_media = any(a["kind"] in ("audio", "image", "video", "diagram") for a in arts)
+        blocked = await db.fetchval(
+            "SELECT count(*) FROM events WHERE step_id=%s AND type='tool_result' AND payload->>'result' LIKE %s",
+            step["id"], "%PAID_PLAN_REQUIRED%")
+        check("media_produced", has_media or blocked,
+              "no audio/image/video artifact was produced" if not blocked else
+              "ElevenLabs feature needs a paid plan; the limitation was reported")
     return result
 
 
-async def review(task: dict, step: dict, spec: dict, verification: dict) -> dict:
+async def review(task: dict, step: dict, spec: dict, verification: dict, on_wait=None) -> dict:
     """Second-model review for code and strict profiles; other profiles rely on deterministic checks."""
     if spec.get("verification") not in ("code-default", "strict"):
         return {"verdict": "accept", "issues": [], "notes": "deterministic checks only", "llm": False}
@@ -172,14 +188,14 @@ async def review(task: dict, step: dict, spec: dict, verification: dict) -> dict
         {"role": "user", "content": f"Acceptance criteria: {json.dumps(task.get('acceptance') or [])}\n"
          f"Step: {step['title']}\n{step['instruction']}\n\nAutomated checks: {json.dumps(verification.get('checks'))[:3000]}"
          f"\n\nStep output:\n{(step.get('output') or '')[:6000]}"}],
-        json_schema=schema, meta=meta, max_tokens=2000, temperature=0)
+        json_schema=schema, meta=meta, max_tokens=2000, temperature=0, on_wait=on_wait)
     d = res.parsed or {"verdict": "accept", "issues": [], "notes": "review unparseable"}
     d["llm"] = True
     d["model"] = res.alias
     return d
 
 
-async def synthesize(task: dict, steps: list[dict]) -> str:
+async def synthesize(task: dict, steps: list[dict], on_wait=None) -> str:
     if len(steps) == 1:
         return steps[0].get("output") or ""
     body = "\n\n".join(f"### {s['title']} (@{s['agent_id']})\n{(s.get('output') or '')[:3000]}" for s in steps)
@@ -189,7 +205,7 @@ async def synthesize(task: dict, steps: list[dict]) -> str:
             {"role": "system", "content": "You are the supervisor. Write the final answer for the user from the step "
              "outputs. Keep every citation and artifact mention. Be concise and well structured."},
             {"role": "user", "content": f"Request: {task['request']}\n\nStep outputs:\n{body}"}],
-            meta=meta, max_tokens=2500)
+            meta=meta, max_tokens=2500, on_wait=on_wait)
         return res.content.strip() + "\n\n---\n<details><summary>Step outputs</summary>\n\n" + body + "\n</details>"
     except Exception:
         return body

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ACTIVE, api, getToken, setToken } from "./api.js";
 import Icon from "./icons.jsx";
 import Chat from "./pages/Chat.jsx";
@@ -12,16 +12,20 @@ import Tools from "./pages/Tools.jsx";
 import Schedules from "./pages/Schedules.jsx";
 import Usage from "./pages/Usage.jsx";
 import Admin from "./pages/Admin.jsx";
+import Projects from "./pages/Projects.jsx";
+import Studio from "./pages/Studio.jsx";
+import { Toasts } from "./components.jsx";
 
 export const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
 const NAV = [
-  ["chat", "Chat"], ["live", "Live trace"], ["tasks", "Tasks"], ["approvals", "Approvals"], ["agents", "Agents"],
-  ["knowledge", "Knowledge"], ["tools", "Tools"], ["schedules", "Schedules"], ["usage", "Usage"], ["admin", "Admin"],
+  ["chat", "Chat"], ["live", "Live trace"], ["tasks", "Tasks"], ["approvals", "Approvals"], ["projects", "Projects"],
+  ["studio", "Studio"], ["knowledge", "Knowledge"], ["agents", "Agents"], ["tools", "Tools & MCP"], ["schedules", "Schedules"],
+  ["usage", "Usage"], ["admin", "Admin"],
 ];
 const ICON = { chat: "chat", live: "live", tasks: "tasks", approvals: "approvals", agents: "agents", knowledge: "knowledge",
-  tools: "tools", schedules: "schedules", usage: "usage", admin: "admin" };
+  tools: "tools", schedules: "schedules", usage: "usage", admin: "admin", studio: "studio", projects: "projects" };
 
 function useHash() {
   const [hash, setHash] = useState(window.location.hash.slice(2) || "chat");
@@ -51,14 +55,51 @@ function Login({ onDone }) {
   return (
     <div className="login">
       <form className="card login-card" onSubmit={submit}>
-        <h1>Memy Agents</h1>
-        <p className="muted">Multi-agent orchestration platform · v0.1</p>
-        <label>Email<input value={email} onChange={(e) => setEmail(e.target.value)} autoFocus /></label>
-        <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-        {err && <div className="error">{err}</div>}
-        <button className="primary" style={{ padding: "9px 12px" }}>Continue</button>
-        <p className="muted small">Seeded users and passwords are in the project's <code>.env</code>.</p>
+        <h1><span className="brand-mark" /> Memy</h1>
+        <p className="muted" style={{ marginTop: -6 }}>Sign in to your team's agent workspace</p>
+        <label>Email<input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus /></label>
+        <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {err && <div className="error" role="alert">{err === "invalid credentials" ? "That email and password don't match an account." : err}</div>}
+        <button className="primary" style={{ padding: "9px 12px" }} disabled={!email || !password}>Sign in</button>
+        <p className="faint small">Demo accounts and passwords are listed in the project's <code>.env</code> file.</p>
       </form>
+    </div>
+  );
+}
+
+function TeamSwitcher({ teams, team, setTeam }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const cur = teams.find((t) => t.id === team) || teams[0];
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  if (!cur) return null;
+  return (
+    <div className="team-switch" ref={ref}>
+      <button className="team-btn" onClick={() => setOpen(!open)} aria-haspopup="listbox" aria-expanded={open} title="Switch team">
+        <span className="team-avatar">{cur.name[0]}</span>
+        <span className="team-name">{cur.name}<span className="faint tiny">{cur.role[0].toUpperCase() + cur.role.slice(1)}</span></span>
+        <Icon name="chevron" size={14} className={`chev ${open ? "up" : ""}`} />
+      </button>
+      {open && (
+        <div className="team-menu" role="listbox" aria-label="Teams">
+          <div className="faint tiny" style={{ padding: "4px 10px" }}>Switch team</div>
+          {teams.map((t) => (
+            <button key={t.id} role="option" aria-selected={t.id === cur.id} className={`team-opt ${t.id === cur.id ? "active" : ""}`}
+              onClick={() => { setTeam(t.id); setOpen(false); }}>
+              <span className="team-avatar">{t.name[0]}</span>
+              <span className="team-name">{t.name}<span className="faint tiny">{t.role[0].toUpperCase() + t.role.slice(1)}</span></span>
+              {t.id === cur.id && <Icon name="approvals" size={14} />}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -102,6 +143,8 @@ export default function App() {
   if (!me) return <div className="center muted">Loading…</div>;
 
   const [page, ...rest] = hash.split("/");
+  const pageName = (NAV.find(([k]) => k === (page || "chat")) || [null, "Chat"])[1];
+  document.title = `${pending ? `(${pending}) ` : ""}${pageName} · Memy`;
   const role = me.teams.find((t) => t.id === team)?.role;
   let body;
   if (page === "tasks" && rest[0]) body = <TaskView id={rest[0]} />;
@@ -109,7 +152,9 @@ export default function App() {
   else if (page === "tasks") body = <Tasks />;
   else if (page === "approvals") body = <Approvals />;
   else if (page === "agents") body = <Agents id={rest[0]} />;
-  else if (page === "knowledge") body = <Knowledge />;
+  else if (page === "knowledge") body = <Knowledge id={rest[0]} />;
+  else if (page === "studio") body = <Studio />;
+  else if (page === "projects") body = <Projects />;
   else if (page === "tools") body = <Tools />;
   else if (page === "schedules") body = <Schedules />;
   else if (page === "usage") body = <Usage />;
@@ -140,9 +185,7 @@ export default function App() {
               </a>
             ))}
           </div>
-          <select value={team} onChange={(e) => setTeam(e.target.value)} className="team-select" title="Team">
-            {me.teams.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.role}</option>)}
-          </select>
+          <TeamSwitcher teams={me.teams} team={team} setTeam={setTeam} />
           <div className="side-foot">
             <div className="avatar">{(me.name || "?")[0].toUpperCase()}</div>
             <div style={{ minWidth: 0 }}>
@@ -155,6 +198,7 @@ export default function App() {
           </div>
         </aside>
         <main className="main">{page === "chat" || !page ? body : <div className="page">{body}</div>}</main>
+        <Toasts />
       </div>
     </Ctx.Provider>
   );

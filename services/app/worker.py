@@ -38,15 +38,24 @@ class LeaseLost(Exception):
     pass
 
 
-async def heartbeat(step_id, runner: asyncio.Task):
+async def heartbeat(step_id, task_id, runner: asyncio.Task):
+    """Renew the lease every few seconds; stop the step if the lease was lost or the task was cancelled."""
+    tick = 0
     while True:
-        await asyncio.sleep(10)
-        n = await db.execute("UPDATE task_steps SET lease_until=now() + make_interval(secs => %s)"
-                             " WHERE id=%s AND locked_by=%s AND status='running'", settings.lease_s, step_id, WORKER_ID)
-        if n == 0:
-            log.warning("lost lease on step %s; cancelling", step_id)
+        await asyncio.sleep(3)
+        tick += 1
+        status = await db.fetchval("SELECT status FROM tasks WHERE id=%s", task_id)
+        if status == "cancelled":
+            log.info("task %s cancelled; stopping step %s", task_id, step_id)
             runner.cancel()
             return
+        if tick % 3 == 0:
+            n = await db.execute("UPDATE task_steps SET lease_until=now() + make_interval(secs => %s)"
+                                 " WHERE id=%s AND locked_by=%s AND status='running'", settings.lease_s, step_id, WORKER_ID)
+            if n == 0:
+                log.warning("lost lease on step %s; cancelling", step_id)
+                runner.cancel()
+                return
 
 
 async def finish(step_id, status: str, **fields):
@@ -63,7 +72,7 @@ async def process(step: dict):
     spec = await get_spec(step["agent_id"], step["agent_version"]) or {}
     timeout = int((spec.get("limits") or {}).get("timeout_s", settings.step_wall_time_s))
     runner = asyncio.create_task(asyncio.wait_for(run_step(step, WORKER_ID, resumed_from), timeout=timeout))
-    hb = asyncio.create_task(heartbeat(step["id"], runner))
+    hb = asyncio.create_task(heartbeat(step["id"], step["task_id"], runner))
     try:
         result = await runner
         if result["status"] == "waiting_approval":
@@ -74,7 +83,11 @@ async def process(step: dict):
             await emit("step_output", task_id=step["task_id"], step_id=step["id"], actor=step["agent_id"],
                        payload={"output": result["output"][:3000]})
     except asyncio.CancelledError:
-        log.info("step %s cancelled (lease lost)", step["id"])
+        if await db.fetchval("SELECT status FROM tasks WHERE id=%s", step["task_id"]) == "cancelled":
+            await finish(step["id"], "cancelled")
+            await emit("step_cancelled", task_id=step["task_id"], step_id=step["id"], actor=WORKER_ID)
+        else:
+            log.info("step %s cancelled (lease lost)", step["id"])
     except asyncio.TimeoutError:
         await finish(step["id"], "failed", error=f"timeout: exceeded {timeout}s wall time")
         await emit("step_failed", task_id=step["task_id"], step_id=step["id"], payload={"reason": "timeout"})
@@ -100,11 +113,17 @@ async def process(step: dict):
 
 
 async def main():
-    await db.init_pool(max_size=6)
+    concurrency = int(os.environ.get("WORKER_CONCURRENCY", "3"))
+    await db.init_pool(max_size=4 + concurrency * 2)
     gateway()
     await checkpointer()
-    log.info("worker %s ready", WORKER_ID)
+    log.info("worker %s ready (up to %d concurrent steps)", WORKER_ID, concurrency)
+    running: set[asyncio.Task] = set()
     while True:
+        running = {t for t in running if not t.done()}
+        if len(running) >= concurrency:
+            await asyncio.sleep(0.5)
+            continue
         try:
             step = await db.fetchrow(CLAIM_SQL, WORKER_ID, settings.lease_s)
         except Exception:
@@ -113,7 +132,7 @@ async def main():
         if not step:
             await asyncio.sleep(1)
             continue
-        await process(dict(step))
+        running.add(asyncio.create_task(process(dict(step))))
 
 
 if __name__ == "__main__":

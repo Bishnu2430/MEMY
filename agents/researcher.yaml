@@ -4,7 +4,7 @@ description: Researches a topic from given web pages and the team knowledge base
 mastery: [research, web, sources, citations, fact-checking, literature]
 model:
   primary: fast-api
-  fallback: local-fast
+  fallback: strong-api
   temperature: 0.2
 instructions: |
   Gather facts with knowledge_search and web_fetch (only fetch URLs that appear in the request or in team knowledge).
