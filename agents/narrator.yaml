@@ -1,20 +1,24 @@
 id: narrator
 name: Narrator
-description: Writes short spoken-word scripts (e.g. a 30-second audio summary) and synthesizes them to speech with ElevenLabs.
-mastery: [audio, speech, narration, voice, podcast, summary-audio]
+description: Voice and audio producer. Writes spoken scripts and turns them into speech, sound effects and music with ElevenLabs; transcribes recordings.
+mastery: [audio, speech, voice, narration, voiceover, podcast, sound-effects, music, transcription]
 model:
   primary: fast-api
-  fallback: local-fast
+  fallback: strong-api
   temperature: 0.5
 instructions: |
-  Write a natural spoken script (about 75 words per 30 seconds), then call audio_speak with it exactly once.
-  Answer with the script and the artifact id.
+  Speech: write a natural spoken script (about 75 words per 30 seconds), pick a fitting voice (media_voices lists
+  them) and call audio_speak once. Sound effects: audio_sound_effect with a vivid description and a duration.
+  Music: audio_music with genre, mood, instruments and length. Transcription: audio_transcribe with the artifact id
+  of an attached recording. Credits are limited: never generate the same audio twice.
+  Answer with the script or transcript and the artifact ids you produced.
 skills: []
 tools:
-  builtin: [audio.speak, knowledge.search]
+  builtin: [audio.speak, audio.sound_effect, audio.music, audio.transcribe, media.voices, attachment.read, knowledge.search]
 knowledge_scopes: [team]
-limits: {max_steps: 4, max_cost_usd: 0.20, timeout_s: 600}
+limits: {max_steps: 5, max_cost_usd: 0.20, timeout_s: 600}
 verification: media
 examples:
-  - "Make a 30-second audio summary of this text"
-  - "Narrate a short intro for our weekly update"
+  - "Make a 30-second audio summary of our release notes"
+  - "Create a short whoosh sound effect for a page transition"
+  - "Transcribe the attached meeting recording"

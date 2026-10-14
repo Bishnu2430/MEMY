@@ -18,10 +18,25 @@ def tool_hash(name: str, description: str, schema: dict) -> str:
                                      sort_keys=True).encode()).hexdigest()
 
 
+async def _secrets(mapping: dict) -> dict:
+    """Map ENV_VAR/header -> credential provider name, decrypted at call time; never logged or shown to agents."""
+    from ..security import decrypt
+    out = {}
+    for key, provider in (mapping or {}).items():
+        row = await db.fetchrow("SELECT ciphertext, nonce FROM credentials WHERE provider=%s", provider)
+        if row:
+            out[key] = decrypt(row["ciphertext"], row["nonce"])
+    return out
+
+
 @asynccontextmanager
-async def session(server: dict):
+async def session(server: dict, context: dict | None = None):
     if server["transport"] == "stdio":
-        env = {**get_default_environment(), "PYTHONPATH": "/app", "HOME": "/home/appuser"}
+        env = {**get_default_environment(), "PYTHONPATH": "/app", "HOME": "/home/appuser",
+               "ARTIFACT_DIR": "/data/artifacts", "INFRA_DIR": "/app/config/infra"}
+        env.update(await _secrets(server.get("secret_env") or {}))
+        if server.get("context_env") and context:
+            env.update({f"MEMY_{k.upper()}": str(v) for k, v in context.items() if v is not None})
         params = StdioServerParameters(command=server["command"], args=list(server["args"] or []), env=env, cwd="/app")
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as s:
@@ -29,10 +44,24 @@ async def session(server: dict):
                 yield s
     else:
         from mcp.client.streamable_http import streamablehttp_client
-        async with streamablehttp_client(server["url"]) as streams:
+        headers = await _secrets(server.get("headers") or {})
+        async with streamablehttp_client(server["url"], headers=headers or None) as streams:
             async with ClientSession(streams[0], streams[1]) as s:
                 await s.initialize()
                 yield s
+
+
+async def probe(server: dict) -> dict:
+    """Connect to a server definition (saved or not) and list its tools, without changing anything."""
+    try:
+        async with session(server, {"team_id": "probe", "project": "probe"}) as s:
+            tools = _describe((await s.list_tools()).tools)
+        return {"ok": True, "tools": [{k: t[k] for k in ("name", "description", "side_effect", "input_schema")} for t in tools]}
+    except Exception as e:
+        msg = str(e) or type(e).__name__
+        if hasattr(e, "exceptions"):
+            msg = "; ".join(str(x) for x in e.exceptions)
+        return {"ok": False, "error": msg[:800]}
 
 
 def _describe(tools) -> list[dict]:
@@ -51,7 +80,7 @@ async def refresh_server(server_id: str, auto_approve: bool = False) -> dict:
     if not server:
         return {"ok": False, "error": "unknown server"}
     try:
-        async with session(server) as s:
+        async with session(server, {"team_id": "refresh", "project": "refresh"}) as s:
             tools = _describe((await s.list_tools()).tools)
     except Exception as e:
         log.warning("mcp refresh %s failed: %s", server_id, e)
@@ -87,13 +116,13 @@ async def approve_tool(server_id: str, name: str, user_id) -> bool:
     return n > 0
 
 
-async def call(server_id: str, name: str, args: dict) -> tuple[bool, str]:
+async def call(server_id: str, name: str, args: dict, context: dict | None = None) -> tuple[bool, str]:
     """Call a pinned tool. The live description is re-hashed in the same session; a mismatch blocks the call."""
     server = await db.fetchrow("SELECT * FROM mcp_servers WHERE id=%s", server_id)
     pinned = await db.fetchrow("SELECT pinned_hash FROM mcp_tools WHERE server_id=%s AND name=%s", server_id, name)
     if not server or not pinned or not pinned["pinned_hash"]:
         return False, "tool is not approved"
-    async with session(server) as s:
+    async with session(server, context) as s:
         live = {t["name"]: t for t in _describe((await s.list_tools()).tools)}
         t = live.get(name)
         if not t or t["hash"] != pinned["pinned_hash"]:

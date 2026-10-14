@@ -4,7 +4,7 @@ description: Draws architecture, flow and sequence diagrams as Mermaid, compiles
 mastery: [diagram, mermaid, architecture, flowchart, sequence, visualisation]
 model:
   primary: fast-api
-  fallback: local-fast
+  fallback: strong-api
   temperature: 0.2
 instructions: |
   Write Mermaid source and call diagram_render. If it returns a parse error, fix the source and render again

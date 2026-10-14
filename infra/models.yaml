@@ -1,12 +1,16 @@
-# Model gateway aliases. Agents name aliases, never concrete models, so swapping a model is
-# a config change here. Hosted aliases activate when api_key_env is set in .env (or a key is
-# stored encrypted via Admin > Credentials); otherwise the gateway walks the fallback chain.
+# Model gateway aliases. Agents name aliases, never concrete models, so swapping a model is a
+# config change here. All chat models are hosted (no local LLM). An alias is usable when its
+# api_key_env is set in .env or a key is stored encrypted via Admin > Provider keys.
+# Each model has its own tokens-per-minute bucket; `fallback` lists the models that absorb overflow.
 # Prices are approximate USD per 1M tokens, used for metering and budgets.
 models:
   strong-api:
     provider: openai_compat
+    provider_label: Groq
     base_url: https://api.groq.com/openai/v1
     model: openai/gpt-oss-120b
+    max_request_tokens: 7600   # TPM 8000: no single request can exceed it
+    daily_token_limit: 200000  # Groq free tier TPD
     api_key_env: GROQ_API_KEY
     credential: groq
     input_per_mtok: 0.15
@@ -15,12 +19,15 @@ models:
     family: gpt-oss
     extra: {reasoning_effort: low}
     strict_json: true
-    prompt_budget_chars: 16000
+    prompt_budget_chars: 14000
     fallback: [fast-api, reviewer-api]
   fast-api:
     provider: openai_compat
+    provider_label: Groq
     base_url: https://api.groq.com/openai/v1
     model: openai/gpt-oss-20b
+    max_request_tokens: 7600
+    daily_token_limit: 200000
     api_key_env: GROQ_API_KEY
     credential: groq
     input_per_mtok: 0.10
@@ -29,31 +36,42 @@ models:
     family: gpt-oss
     extra: {reasoning_effort: low}
     strict_json: true
-    prompt_budget_chars: 16000
+    prompt_budget_chars: 14000
     fallback: [strong-api, reviewer-api]
   reviewer-api:
     provider: openai_compat
+    provider_label: Groq
     base_url: https://api.groq.com/openai/v1
     model: qwen/qwen3.8-27b
+    max_request_tokens: 6600   # ITPM 7000
+    daily_token_limit: 200000
     api_key_env: GROQ_API_KEY
     credential: groq
     input_per_mtok: 0.29
     output_per_mtok: 0.59
     context: 131072
     family: qwen
-    extra: {reasoning_format: hidden}
-    prompt_budget_chars: 16000
+    vision: true
+    extra: {reasoning_effort: none}   # hidden reasoning silently consumed the output budget
+    prompt_budget_chars: 14000
     fallback: [strong-api, fast-api]
-  local-fast:
-    provider: ollama
-    model: qwen2.5:3b
-    context: 8192
-    family: qwen-local
-  local-coder:
-    provider: ollama
-    model: qwen2.5:3b
-    context: 8192
-    family: qwen-local
+  code-api:   # same model as strong-api (shares its rate-limit bucket); overflows only to gpt-oss-20b
+    provider: openai_compat
+    provider_label: Groq
+    base_url: https://api.groq.com/openai/v1
+    model: openai/gpt-oss-120b
+    max_request_tokens: 7600
+    daily_token_limit: 200000
+    api_key_env: GROQ_API_KEY
+    credential: groq
+    input_per_mtok: 0.15
+    output_per_mtok: 0.75
+    context: 131072
+    family: gpt-oss
+    extra: {reasoning_effort: low}
+    strict_json: true
+    prompt_budget_chars: 12000
+    fallback: [fast-api, reviewer-api]   # qwen only as a last resort for code
   # Role aliases
   router:
     alias_of: strong-api
@@ -62,11 +80,17 @@ models:
   verifier:
     alias_of: reviewer-api
   bulk:
-    alias_of: fast-api   # no GPU: bulk scoring on a cheap hosted model, local stays the fallback
+    alias_of: fast-api
+  vision:
+    alias_of: reviewer-api
 
 embedding:
-  provider: ollama
-  model: nomic-embed-text
-  dims: 768
-  document_prefix: "search_document: "
-  query_prefix: "search_query: "
+  provider: embedder
+  model: BAAI/bge-small-en-v1.5
+  dims: 384
+
+transcription:
+  url: https://api.groq.com/openai/v1/audio/transcriptions
+  model: whisper-large-v3-turbo
+  api_key_env: GROQ_API_KEY
+  usd_per_hour: 0.04

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { ago, api } from "../api.js";
 import { useApp } from "../App.jsx";
 import Markdown from "../Markdown.jsx";
+import CopyButton from "../copy.jsx";
+import { PROFILE, modelLabel, toolLabel } from "../labels.js";
 
 function diff(a, b) {
   const A = (a || "").split("\n"), B = (b || "").split("\n");
@@ -38,14 +40,24 @@ function Editor({ id, onSaved }) {
     <div className="card">
       <div className="row"><h3>{a.spec?.name} <span className="muted">@{id} · v{a.current_version}</span></h3></div>
       <Markdown>{a.spec?.description || ""}</Markdown>
+      <div className="small" style={{ margin: "6px 0" }}>
+        <b>Model</b> {modelLabel(a.spec?.model?.primary)} (falls back to {modelLabel(a.spec?.model?.fallback)}) ·{" "}
+        <b>Verification</b> {PROFILE[a.spec?.verification] || a.spec?.verification}
+      </div>
+      <div className="small"><b>Tools</b> {[...(a.spec?.tools?.builtin || []), ...(a.spec?.tools?.mcp || []).map((m) => `mcp.${m}`)].map(toolLabel).join(" · ") || "none"}</div>
+      {a.spec?.approval_required?.length > 0 && <div className="small"><b>Always asks before</b> {a.spec.approval_required.map(toolLabel).join(" · ")}</div>}
+      <div className="row" style={{ marginBottom: 0 }}><h4 style={{ margin: 0 }}>Configuration (YAML)</h4>
+        {yaml !== a.yaml && <span className="warn-text tiny">unsaved changes</span>}
+        <span className="answer-actions right" style={{ margin: 0 }}><CopyButton text={yaml} label="Copy YAML" />
+          {yaml !== a.yaml && <button onClick={() => setYaml(a.yaml)}>Discard changes</button>}</span></div>
       <textarea className="mono yaml" rows={22} value={yaml} onChange={(e) => setYaml(e.target.value)} />
       <div className="row">
         <button className="primary" onClick={save}>Save new version</button>
         <input placeholder="clone as id…" value={cloneId} onChange={(e) => setCloneId(e.target.value)} />
         <button onClick={clone} disabled={!cloneId}>Clone for my team</button>
         <button onClick={() => api(`/agents/${id}/enabled?enabled=${!a.enabled}`, { method: "POST" }).then(load)}>{a.enabled ? "Disable" : "Enable"}</button>
-        <button onClick={() => api("/admin/controls", { method: "POST", body: { scope: `agent:${id}`, paused: true } }).then(onSaved)}>Kill switch: pause</button>
-        <button onClick={() => api("/admin/controls", { method: "POST", body: { scope: `agent:${id}`, paused: false } }).then(onSaved)}>Resume</button>
+        <button onClick={() => api("/admin/controls", { method: "POST", body: { scope: `agent:${id}`, paused: true } }).then(onSaved)}>Pause agent</button>
+        <button onClick={() => api("/admin/controls", { method: "POST", body: { scope: `agent:${id}`, paused: false } }).then(onSaved)}>Resume agent</button>
       </div>
       {msg && <div className="muted">{msg}</div>}
       <h4>Playground</h4>
@@ -55,8 +67,8 @@ function Editor({ id, onSaved }) {
       <table><tbody>
         {a.versions.map((v) => (
           <tr key={v.version}><td>v{v.version}</td><td className="muted small">{ago(v.created_at)}</td>
-            <td><button className="link" onClick={() => setCmp(v)}>diff vs current</button></td>
-            <td>{v.version !== a.current_version && <button className="link" onClick={() => rollback(v.version)}>roll back to this</button>}</td></tr>
+            <td><button className="link" onClick={() => setCmp(v)}>Compare with current</button></td>
+            <td>{v.version !== a.current_version && <button className="link" onClick={() => rollback(v.version)}>Restore this version</button>}</td></tr>
         ))}
       </tbody></table>
       {cmp && <pre className="diff">{diff(cmp.yaml, a.yaml) || "(identical)"}</pre>}
@@ -70,14 +82,14 @@ export default function Agents({ id }) {
   useEffect(() => { load(); }, []);
   return (
     <div>
-      <div className="page-head"><h2>Agents</h2><span className="muted">every agent is a versioned AgentSpec run by one executor</span></div>
+      <div className="page-head"><h2>Agents</h2><span className="muted">each agent is a versioned configuration — model, tools, skills, instructions and limits</span></div>
       <div className="grid-side">
         <div className="card list">
           {agents.map((a) => (
             <a key={a.id} href={`#/agents/${a.id}`} className={`agent-row ${id === a.id ? "active" : ""}`}>
               <div><b>@{a.id}</b> {a.paused && <span className="badge warn">paused</span>} {!a.enabled && <span className="badge">disabled</span>}</div>
-              <div className="muted small">{a.name} · {a.model?.primary} · {a.verification}</div>
-              <div className="muted small">{a.stats?.done || 0}/{a.stats?.steps || 0} steps done · {a.stats?.retried || 0} retried</div>
+              <div className="muted small">{a.name} · {modelLabel(a.model?.primary)} · {PROFILE[a.verification] || a.verification}</div>
+              <div className="muted small">{a.stats?.steps ? `${a.stats.done} of ${a.stats.steps} steps completed · ${a.stats.retried} needed a retry` : "Not used yet"}</div>
             </a>
           ))}
         </div>

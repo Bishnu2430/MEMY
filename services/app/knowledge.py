@@ -61,7 +61,8 @@ def parse_file(filename: str, data: bytes) -> str:
 async def ingest_text(*, team_id, title: str, text: str, kind: str = "text", project: str | None = None,
                       url: str | None = None, domain: str | None = None, created_by=None, trust: float = 0.8,
                       status: str = "live", scores: dict | None = None, simhash: int | None = None,
-                      meta: UsageMeta | None = None) -> dict:
+                      meta: UsageMeta | None = None, task_id=None, step_id=None, agent_id: str | None = None,
+                      artifact_id=None, announce: bool = True) -> dict:
     h = content_hash(text)
     existing = await db.fetchrow("SELECT id, status FROM sources WHERE team_id=%s AND content_hash=%s", team_id, h)
     if existing:
@@ -71,15 +72,21 @@ async def ingest_text(*, team_id, title: str, text: str, kind: str = "text", pro
     async with db.tx() as conn:
         cur = await conn.execute(
             "INSERT INTO sources(team_id, project, kind, url, domain, title, content_hash, simhash, scores, trust_score,"
-            " status, excerpt, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            " status, excerpt, created_by, task_id, step_id, agent_id, artifact_id)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (team_id, project, kind, url, domain, title[:300], h, simhash, db.J(scores or {}), trust, status,
-             text[:1200], created_by))
+             text[:1200], created_by, task_id, step_id, agent_id, artifact_id))
         sid = (await cur.fetchone())["id"]
         for i, (c, e) in enumerate(zip(chunks, embeddings)):
             await conn.execute(
                 "INSERT INTO chunks(source_id, team_id, project, ord, content, embedding, embedding_model)"
                 " VALUES (%s,%s,%s,%s,%s,%s::vector,%s)",
                 (sid, team_id, project, i, c, _vec(e), gateway().embedding_model))
+    if announce and task_id:
+        from .events import emit
+        await emit("knowledge_stored", task_id=task_id, step_id=step_id, actor=agent_id or "system", payload={
+            "source_id": str(sid), "title": title[:300], "kind": kind, "status": status, "trust": round(trust, 2),
+            "chunks": len(chunks), "excerpt": text[:500], "url": url})
     return {"source_id": str(sid), "chunks": len(chunks), "status": status, "duplicate": False}
 
 
@@ -162,6 +169,7 @@ async def decide_memory(proposal_id, decision: str, user_id) -> dict:
     result = {"ok": True, "status": status}
     if status == "approved":
         result.update(await ingest_text(team_id=p["team_id"], title=f"Memory: {p['fact'][:80]}", text=p["fact"],
-                                        kind="memory", url=p["source_url"], created_by=user_id, trust=0.85))
+                                        kind="memory", url=p["source_url"], created_by=user_id, trust=0.85,
+                                        task_id=p["task_id"], agent_id=p["agent_id"]))
     await audit(user_id, f"memory.{status}", str(proposal_id))
     return result

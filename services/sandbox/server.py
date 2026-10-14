@@ -38,12 +38,16 @@ def _run(cmd: list[str], cwd: str, timeout: int) -> dict:
 
 
 def _workspace(files: dict[str, str]) -> str:
-    d = tempfile.mkdtemp(prefix="job-", dir="/tmp")
-    for name, content in files.items():
-        safe = Path(name).name
-        if safe:
-            (Path(d) / safe).write_text(content)
-    return d
+    """Write files keeping their folders (backend/app/main.py stays importable as backend.app.main)."""
+    d = Path(tempfile.mkdtemp(prefix="job-", dir="/tmp"))
+    for name, content in list(files.items())[:300]:
+        rel = Path(str(name).replace("\\", "/").lstrip("/"))
+        if not rel.parts or ".." in rel.parts:
+            continue
+        p = d / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return str(d)
 
 
 @app.get("/health")
@@ -80,7 +84,7 @@ def check(job: Job):
                                          "file": i["filename"].split("/")[-1]} for i in bj.get("results", [])]}
         except json.JSONDecodeError:
             out["bandit"] = {"issues": [], "error": b["stderr"][-500:]}
-        if any(n.startswith("test_") for n in job.files):
+        if any(Path(n).name.startswith("test_") or Path(n).name.endswith("_test.py") for n in job.files):
             t = _run(["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header"], d, min(job.timeout, 90))
             out["tests"] = {"passed": t["exit_code"] == 0, "output": (t["stdout"] + t["stderr"])[-4000:]}
         else:

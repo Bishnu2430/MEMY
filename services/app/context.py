@@ -72,22 +72,33 @@ async def compile_system(task: dict, step: dict, spec: dict, budget_chars: int, 
                     hits, int(budget_chars * 0.25))
         except Exception:
             part4 = ""
+    from .inputs import context_block
+    part5 = await context_block(task["id"], int(budget_chars * 0.22)) if task.get("attachments") else ""
     sections = [_cap(part1, int(budget_chars * 0.12)), _cap(part2, int(budget_chars * 0.10)),
                 "## Task ledger\n" + _cap(part3, int(budget_chars * 0.15))]
+    if part5:
+        sections.append(part5)
     if part4:
         sections.append(part4)
     return "\n\n".join(s for s in sections if s)
 
 
 def trim_turns(messages: list[dict], budget_chars: int) -> list[dict]:
-    """Keep recent turns; older tool results collapse to short stubs."""
-    total = sum(len(str(m.get("content") or "")) for m in messages)
-    if total <= budget_chars:
-        return messages
+    """Keep recent turns; older tool results collapse to short stubs, newest results are capped."""
     out = []
-    keep_full_from = max(0, len(messages) - 4)
+    keep_full_from = max(0, len(messages) - 2)
     for i, m in enumerate(messages):
-        if i < keep_full_from and m.get("role") == "tool":
-            m = {**m, "content": str(m.get("content", ""))[:300] + " [older result truncated]"}
+        if m.get("role") == "tool":
+            c = str(m.get("content", ""))
+            limit = 3500 if i >= keep_full_from else 400
+            if len(c) > limit:
+                m = {**m, "content": c[:limit] + f" [... {len(c) - limit} chars truncated]"}
         out.append(m)
+    total = sum(len(str(m.get("content") or "")) for m in out)
+    i = 0
+    while total > budget_chars and i < len(out) - 2:  # still too long: stub the oldest results first
+        if out[i].get("role") == "tool" and len(str(out[i]["content"])) > 120:
+            total -= len(str(out[i]["content"])) - 120
+            out[i] = {**out[i], "content": str(out[i]["content"])[:120] + " [older result truncated]"}
+        i += 1
     return out

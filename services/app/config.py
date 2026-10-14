@@ -11,7 +11,7 @@ class Settings:
     database_url: str = _env("DATABASE_URL", "postgresql://app:app@localhost:5432/platform")
     jwt_secret: str = _env("JWT_SECRET", "dev-secret")
     master_key: str = _env("MASTER_KEY", "")
-    ollama_base_url: str = _env("OLLAMA_BASE_URL", "http://localhost:11434")
+    embedder_url: str = _env("EMBEDDER_URL", "http://localhost:8003")
     sandbox_url: str = _env("SANDBOX_URL", "http://localhost:8001")
     renderer_url: str = _env("RENDERER_URL", "http://localhost:8002")
     artifact_dir: str = _env("ARTIFACT_DIR", "/data/artifacts")

@@ -30,8 +30,14 @@ async def start_single(task: dict, agent_id: str, *, how: str):
     await emit("step_planned", task_id=task["id"], payload={"how": how, "agent_id": agent_id})
 
 
+def files_note(task: dict) -> str:
+    atts = task.get("attachments") or []
+    return ("\n\nAttached files: " + ", ".join(f"{a['name']} ({a['kind']})" for a in atts)) if atts else ""
+
+
 async def create_task(*, team_id, user_id, text: str, project: str | None = None, agent_id: str | None = None,
-                      private: bool = False, schedule_id=None, budget_usd: float | None = None) -> dict:
+                      private: bool = False, schedule_id=None, budget_usd: float | None = None,
+                      attachment_ids: list[str] | None = None) -> dict:
     text = (text or "").strip()
     if not text:
         raise TaskError("empty request")
@@ -44,14 +50,20 @@ async def create_task(*, team_id, user_id, text: str, project: str | None = None
         if explicit not in allowed:
             raise TaskError(f"agent @{explicit} is unknown, paused or not available to this team")
     title = text.replace("\n", " ")[:90]
+    # 'preparing' until attachments are linked, so no agent starts before its inputs exist.
     task = await db.fetchrow(
         "INSERT INTO tasks(team_id, project, created_by, title, request, status, mode, requested_agent, budget_usd,"
-        " budget_tokens, private, schedule_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-        team_id, project, user_id, title, text, "running" if explicit else "routing", "manual" if explicit else "auto",
+        " budget_tokens, private, schedule_id) VALUES (%s,%s,%s,%s,%s,'preparing',%s,%s,%s,%s,%s,%s) RETURNING *",
+        team_id, project, user_id, title, text, "manual" if explicit else "auto",
         explicit, budget_usd or team["budget_usd_per_task"], team["budget_tokens_per_task"], private, schedule_id)
     await emit("task_created", task_id=task["id"], team_id=team_id, actor=str(user_id),
-               payload={"request": text, "mode": task["mode"], "agent": explicit})
-    if explicit:
+               payload={"request": text, "mode": task["mode"], "agent": explicit, "attachments": len(attachment_ids or [])})
+    if attachment_ids:
+        from .inputs import attach_to_task
+        await attach_to_task(dict(task), attachment_ids, user_id)
+    if not explicit:
+        await db.execute("UPDATE tasks SET status='routing' WHERE id=%s", task["id"])
+    else:
         await db.execute("INSERT INTO routing_log(task_id, team_id, request, chosen, mode, confidence, reason)"
                          " VALUES (%s,%s,%s,%s,'manual',1,'explicit mention')", task["id"], team_id, text, explicit)
         await start_single(task, explicit, how="manual")

@@ -1,0 +1,25 @@
+id: designer
+name: Designer
+description: Visual designer. Creates images and short videos with ElevenLabs, and hand-crafted SVG illustrations, icons, logos and UI mockups.
+mastery: [image, illustration, logo, icon, banner, mockup, video, visual, design, svg, product-photo]
+model:
+  primary: strong-api
+  fallback: fast-api
+  temperature: 0.4
+instructions: |
+  For photographic or rich imagery call image_generate with a detailed prompt (subject, style, lighting,
+  composition) and a suitable aspect_ratio. For short clips call video_generate (needs approval; keep it 4 s).
+  For logos, icons, diagrams of UI or when image generation is unavailable on the current plan, write clean SVG
+  (viewBox, flat shapes, readable text, no scripts) and save it with image_svg.
+  Answer with what you produced, the artifact ids, and design notes.
+skills: []
+tools:
+  builtin: [image.generate, image.svg, video.generate, attachment.read, knowledge.search, artifact.save]
+knowledge_scopes: [team]
+limits: {max_steps: 6, max_cost_usd: 0.30, timeout_s: 900}
+approval_required: [video.generate]
+verification: media
+examples:
+  - "Design a logo for our online store called Nimbus"
+  - "Generate a hero image of a minimalist sneaker on a pastel background"
+  - "Make a 4-second product teaser video"

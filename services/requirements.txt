@@ -12,6 +12,7 @@ langgraph>=1.0
 langgraph-checkpoint-postgres>=2.0
 mcp>=1.10
 mcp-server-time>=0.6
+mcp-server-fetch>=2025.1
 trafilatura>=1.12
 pypdf>=5.0
 python-docx>=1.1

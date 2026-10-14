@@ -1,13 +1,16 @@
 """Master node API: REST + SSE for the web dashboard and the terminal client."""
 import asyncio
+import uuid
 import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import jsonschema
+import yaml
 from croniter import croniter
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from .. import agents as agent_reg
@@ -20,10 +23,11 @@ from ..security import decode_token, encrypt, make_token, verify_password, hash_
 from ..seed import seed
 from ..tasks import TaskError, create_task, start_single, task_cost
 from ..tools import BUILTINS, mcp_client
+from . import extra
+from .deps import RANK, current_user, need, need_admin_any
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
-RANK = {"viewer": 0, "member": 1, "admin": 2, "owner": 3}
 
 
 async def _card_refresher():
@@ -46,53 +50,32 @@ async def lifespan(app: FastAPI):
     await checkpointer(setup=True)
     gateway()
     await seed()
+    await extra.fail_interrupted_jobs()
     task = asyncio.create_task(_card_refresher())
     yield
     task.cancel()
 
 
 app = FastAPI(title="Memy Orchestration Platform", lifespan=lifespan)
+app.include_router(extra.router)
+
+
+@app.exception_handler(jsonschema.ValidationError)
+async def _schema_error(request: Request, exc: jsonschema.ValidationError):
+    return JSONResponse(status_code=400, content={"detail": _spec_error(exc)})
+
+
+@app.exception_handler(yaml.YAMLError)
+async def _yaml_error(request: Request, exc: yaml.YAMLError):
+    return JSONResponse(status_code=400, content={"detail": _spec_error(exc)})
+
+
+@app.exception_handler(TaskError)
+async def _task_error(request: Request, exc: TaskError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 # ---------------- auth ----------------
-async def current_user(request: Request) -> dict:
-    auth = request.headers.get("authorization", "")
-    token = auth[7:] if auth.lower().startswith("bearer ") else request.query_params.get("token")
-    if not token:
-        raise HTTPException(401, "not authenticated")
-    try:
-        uid = decode_token(token)
-    except Exception:
-        raise HTTPException(401, "invalid token")
-    user = await db.fetchrow("SELECT id, email, name, is_owner, active FROM users WHERE id=%s", uid)
-    if not user or not user["active"]:
-        raise HTTPException(401, "user inactive")
-    rows = await db.fetch("SELECT m.team_id, m.role, t.name, t.slug FROM memberships m JOIN teams t ON t.id=m.team_id"
-                          " WHERE m.user_id=%s", uid)
-    user = dict(user)
-    user["roles"] = {str(r["team_id"]): ("owner" if user["is_owner"] else r["role"]) for r in rows}
-    user["teams"] = [{"id": str(r["team_id"]), "name": r["name"], "slug": r["slug"],
-                      "role": user["roles"][str(r["team_id"])]} for r in rows]
-    if user["is_owner"]:
-        for t in await db.fetch("SELECT id, name, slug FROM teams"):
-            if str(t["id"]) not in user["roles"]:
-                user["roles"][str(t["id"])] = "owner"
-                user["teams"].append({"id": str(t["id"]), "name": t["name"], "slug": t["slug"], "role": "owner"})
-    return user
-
-
-def need(user: dict, team_id, min_role: str = "viewer"):
-    role = user["roles"].get(str(team_id))
-    if role is None or RANK[role] < RANK[min_role]:
-        raise HTTPException(403, f"requires {min_role} role in this team")
-    return role
-
-
-def need_admin_any(user: dict):
-    if not (user["is_owner"] or any(RANK[r] >= RANK["admin"] for r in user["roles"].values())):
-        raise HTTPException(403, "admin role required")
-
-
 class Login(BaseModel):
     email: str
     password: str
@@ -126,6 +109,7 @@ class NewTask(BaseModel):
     agent_id: str | None = None
     private: bool = False
     budget_usd: float | None = None
+    attachment_ids: list[str] = []
 
 
 async def _get_task(task_id: str, user: dict) -> dict:
@@ -143,7 +127,8 @@ async def new_task(body: NewTask, user=Depends(current_user)):
     need(user, body.team_id, "member")
     try:
         return await create_task(team_id=body.team_id, user_id=user["id"], text=body.text, project=body.project,
-                                 agent_id=body.agent_id, private=body.private, budget_usd=body.budget_usd)
+                                 agent_id=body.agent_id, private=body.private, budget_usd=body.budget_usd,
+                                 attachment_ids=body.attachment_ids)
     except TaskError as e:
         raise HTTPException(400, str(e))
 
@@ -167,8 +152,9 @@ async def get_task(task_id: str, user=Depends(current_user)):
     t = await _get_task(task_id, user)
     t["steps"] = await db.fetch("SELECT * FROM task_steps WHERE task_id=%s ORDER BY ord", task_id)
     t["approvals"] = await db.fetch("SELECT * FROM approvals WHERE task_id=%s ORDER BY requested_at", task_id)
-    t["artifacts"] = await db.fetch("SELECT id, step_id, name, kind, mime, size, created_at FROM artifacts"
+    t["artifacts"] = await db.fetch("SELECT id, step_id, name, kind, mime, size, meta, role, created_at FROM artifacts"
                                     " WHERE task_id=%s ORDER BY created_at", task_id)
+    t["knowledge_count"] = await db.fetchval("SELECT count(*) FROM sources WHERE task_id=%s", task_id)
     t["cost"] = await task_cost(task_id)
     t["step_costs"] = {str(r["step_id"]): r for r in await db.fetch(
         "SELECT step_id, coalesce(sum(cost_usd),0)::float AS cost_usd, coalesce(sum(tokens_in+tokens_out),0)::int AS tokens"
@@ -243,10 +229,39 @@ async def cancel_task(task_id: str, user=Depends(current_user)):
     t = await _get_task(task_id, user)
     if t["created_by"] != user["id"]:
         need(user, t["team_id"], "admin")
-    await db.execute("UPDATE tasks SET status='cancelled', updated_at=now() WHERE id=%s", task_id)
-    await db.execute("UPDATE task_steps SET status='cancelled' WHERE task_id=%s AND status NOT IN ('done','running')", task_id)
+    if t["status"] in TERMINAL:
+        raise HTTPException(400, f"task is already {t['status']}")
+    await db.execute("UPDATE tasks SET status='cancelled', error=%s, updated_at=now() WHERE id=%s",
+                     f"cancelled by {user['name']}", task_id)
+    # Running steps are flagged too; their worker sees the cancellation within ~3 s and stops.
+    await db.execute("UPDATE task_steps SET status='cancelled' WHERE task_id=%s AND status NOT IN ('done','escalated')", task_id)
+    await db.execute("UPDATE approvals SET status='rejected', decided_by=%s, decided_at=now() WHERE task_id=%s"
+                     " AND status='pending'", user["id"], task_id)
     await emit("task_cancelled", task_id=task_id, actor=str(user["id"]))
     return {"ok": True}
+
+
+TERMINAL = ("completed", "cancelled", "failed")
+
+
+@app.post("/api/tasks/{task_id}/rerun")
+async def rerun_task(task_id: str, user=Depends(current_user)):
+    """Start a fresh task with the same request, project and attached files."""
+    t = await _get_task(task_id, user)
+    need(user, t["team_id"], "member")
+    ids = []
+    for a in await db.fetch("SELECT * FROM artifacts WHERE task_id=%s AND role='input' ORDER BY created_at", task_id):
+        nid = await db.fetchval(
+            "INSERT INTO artifacts(task_id, step_id, team_id, name, kind, mime, storage_path, content_hash, size, meta,"
+            " created_by, role, extracted) VALUES (NULL,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,'input',%s) RETURNING id",
+            a["team_id"], a["name"], a["kind"], a["mime"], a["storage_path"], a["content_hash"], a["size"],
+            db.J(a["meta"] or {}), user["id"], a["extracted"])
+        ids.append(str(nid))
+    try:
+        return await create_task(team_id=t["team_id"], user_id=user["id"], text=t["request"], project=t["project"],
+                                 agent_id=t["requested_agent"], private=t["private"], attachment_ids=ids)
+    except TaskError as e:
+        raise HTTPException(400, str(e))
 
 
 class Budget(BaseModel):
@@ -281,14 +296,14 @@ async def step_action(step_id: str, body: StepAction, user=Depends(current_user)
     need(user, t["team_id"], "member")
     if body.action == "retry":
         await db.execute("UPDATE task_steps SET status='ready', attempts=attempts+1, thread_id=%s, locked_by=NULL,"
-                         " correction=coalesce(%s, correction) WHERE id=%s", f"{step_id}:h{s['attempts'] + 1}", body.output, step_id)
+                         " correction=coalesce(%s, correction) WHERE id=%s", f"{step_id}:{uuid.uuid4().hex[:10]}", body.output, step_id)
     elif body.action == "reassign":
         spec = await agent_reg.get_spec(body.agent_id or "")
         if not spec:
             raise HTTPException(400, "unknown agent")
         await db.execute("UPDATE task_steps SET status='ready', agent_id=%s, agent_version=%s, attempts=0, thread_id=%s,"
                          " agents_tried=array_append(agents_tried, %s), locked_by=NULL WHERE id=%s",
-                         body.agent_id, spec["version"], f"{step_id}:u{s['reassignments'] + s['attempts'] + 1}",
+                         body.agent_id, spec["version"], f"{step_id}:{uuid.uuid4().hex[:10]}",
                          body.agent_id, step_id)
     elif body.action == "complete":
         await db.execute("UPDATE task_steps SET status='done', output=%s, finished_at=now(), locked_by=NULL WHERE id=%s",
@@ -362,12 +377,24 @@ class SpecBody(BaseModel):
     team_id: str | None = None
 
 
+def _spec_error(e: Exception) -> str:
+    if isinstance(e, jsonschema.ValidationError):
+        where = ".".join(str(p) for p in e.absolute_path)
+        return f"Invalid agent configuration{f' at {where}' if where else ''}: {e.message}"
+    if isinstance(e, yaml.YAMLError):
+        return f"The YAML could not be parsed: {str(e).splitlines()[0]}"
+    return str(e)
+
+
 async def _check_grants(user: dict, yaml_text: str):
     """Editors can only grant models, tools and scopes within what their own role allows."""
-    spec = agent_reg.parse_spec(yaml_text)
     is_admin = user["is_owner"] or any(RANK[r] >= RANK["admin"] for r in user["roles"].values())
-    if not is_admin:
-        raise HTTPException(403, "only admins can change agent specs")
+    if not is_admin:  # permission first: never reveal validation details to someone who may not edit
+        raise HTTPException(403, "only team admins can change agents")
+    try:
+        spec = agent_reg.parse_spec(yaml_text)
+    except Exception as e:
+        raise HTTPException(400, _spec_error(e))
     for alias in (spec["model"]["primary"], spec["model"].get("fallback")):
         if alias and alias not in gateway().models:
             raise HTTPException(400, f"unknown model alias {alias}")
@@ -383,7 +410,7 @@ async def update_agent(agent_id: str, body: SpecBody, user=Depends(current_user)
     try:
         return await agent_reg.save_version(body.yaml, user["id"], expected_id=agent_id)
     except Exception as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, _spec_error(e))
 
 
 @app.post("/api/agents")
@@ -570,13 +597,17 @@ class McpServer(BaseModel):
     command: str | None = None
     args: list[str] = []
     url: str | None = None
+    secret_env: dict = {}
+    headers: dict = {}
+    description: str | None = None
 
 
 @app.post("/api/mcp/servers")
 async def add_mcp(body: McpServer, user=Depends(current_user)):
     need_admin_any(user)
-    await db.execute("INSERT INTO mcp_servers(id, name, transport, command, args, url) VALUES (%s,%s,%s,%s,%s,%s)",
-                     body.id, body.name, body.transport, body.command, db.J(body.args), body.url)
+    await db.execute("INSERT INTO mcp_servers(id, name, transport, command, args, url, secret_env, headers, description)"
+                     " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", body.id, body.name, body.transport, body.command,
+                     db.J(body.args), body.url, db.J(body.secret_env), db.J(body.headers), body.description)
     await audit(user["id"], "mcp.server_added", body.id, body.model_dump())
     return await mcp_client.refresh_server(body.id)
 
@@ -615,7 +646,7 @@ async def del_grant(grant_id: str, user=Depends(current_user)):
         raise HTTPException(404)
     need(user, g["team_id"], "admin")
     await db.execute("DELETE FROM tool_grants WHERE id=%s", grant_id)
-    await audit(user["id"], "grant.revoked", g["tool"])
+    await audit(user["id"], "grant.revoked", g["tool"], {"team_id": str(g["team_id"])})
     return {"ok": True}
 
 
@@ -701,9 +732,16 @@ async def usage(days: int = 7, user=Depends(current_user)):
     return {
         "totals": (await q(f"SELECT coalesce(sum(cost_usd),0)::float AS cost_usd, coalesce(sum(tokens_in),0)::int AS tokens_in,"
                            f" coalesce(sum(tokens_out),0)::int AS tokens_out, count(*) FILTER (WHERE kind='llm')::int AS llm_calls,"
-                           f" count(*) FILTER (WHERE kind='tool')::int AS tool_calls FROM usage_records u WHERE {w}"))[0],
+                           f" count(*) FILTER (WHERE kind='tool')::int AS tool_calls, count(*) FILTER (WHERE kind='media')::int AS media_calls,"
+                           f" count(*) FILTER (WHERE status='rate_limited')::int AS rate_limited FROM usage_records u WHERE {w}"))[0],
         "by_day": await q(f"SELECT date_trunc('day', created_at)::date AS day, coalesce(sum(cost_usd),0)::float AS cost_usd,"
                           f" coalesce(sum(tokens_in+tokens_out),0)::int AS tokens FROM usage_records u WHERE {w} GROUP BY 1 ORDER BY 1"),
+        "daily_quota": await gateway().daily_status(),
+        "by_day_model": await q(f"SELECT date_trunc('day', created_at)::date AS day, model AS key,"
+                                f" coalesce(sum(tokens_in+tokens_out),0)::int AS tokens, coalesce(sum(cost_usd),0)::float AS cost_usd"
+                                f" FROM usage_records u WHERE {w} AND kind='llm' AND status='ok' GROUP BY 1,2 ORDER BY 1"),
+        "by_kind": await q(f"SELECT kind AS key, count(*)::int AS calls, coalesce(sum(cost_usd),0)::float AS cost_usd"
+                           f" FROM usage_records u WHERE {w} GROUP BY 1 ORDER BY 2 DESC"),
         "by_agent": await q(f"SELECT coalesce(agent_id,'-') AS key, coalesce(sum(cost_usd),0)::float AS cost_usd,"
                             f" coalesce(sum(tokens_in+tokens_out),0)::int AS tokens, count(*)::int AS calls FROM usage_records u"
                             f" WHERE {w} GROUP BY 1 ORDER BY 2 DESC, 3 DESC"),
@@ -761,6 +799,7 @@ async def live(task_id: str | None = None, user=Depends(current_user)):
         " FROM task_steps s JOIN tasks t ON t.id=s.task_id WHERE t.team_id::text = ANY(%s)"
         " AND (%s::uuid IS NULL OR s.task_id=%s::uuid)"
         " AND (s.status IN ('running','reviewing','waiting_approval','ready') OR %s::uuid IS NOT NULL)"
+        " AND t.status NOT IN ('cancelled','completed','failed')"
         " ORDER BY s.started_at NULLS LAST, s.ord", teams, task_id, task_id, task_id)
     tasks = await db.fetch(
         "SELECT t.id, t.title, t.status, t.created_at,"

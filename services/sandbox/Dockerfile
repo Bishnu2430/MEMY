@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
-RUN pip install fastapi "uvicorn[standard]" ruff bandit pytest
+RUN pip install fastapi "uvicorn[standard]" ruff bandit pytest httpx pydantic sqlalchemy
 COPY server.py /srv/server.py
 RUN useradd --create-home --uid 10002 sandbox
 USER sandbox

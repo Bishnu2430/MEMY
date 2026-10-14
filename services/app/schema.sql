@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS agent_cards (
   agent_id text PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
   version integer NOT NULL,
   card_text text NOT NULL,
-  embedding vector(768)
+  embedding vector(384)
 );
 
 CREATE TABLE IF NOT EXISTS skills (
@@ -241,12 +241,31 @@ CREATE TABLE IF NOT EXISTS chunks (
   ord integer NOT NULL,
   content text NOT NULL,
   tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
-  embedding vector(768),
+  embedding vector(384),
   embedding_model text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin(tsv);
+DO $$
+BEGIN
+  -- Embedding model changed (768-d -> 384-d): keep rows, clear vectors; cards re-embed automatically.
+  IF EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+             WHERE c.relname = 'chunks' AND a.attname = 'embedding'
+               AND format_type(a.atttypid, a.atttypmod) <> 'vector(384)') THEN
+    DROP INDEX IF EXISTS chunks_emb_idx;
+    ALTER TABLE chunks ALTER COLUMN embedding TYPE vector(384) USING NULL;
+    ALTER TABLE agent_cards ALTER COLUMN embedding TYPE vector(384) USING NULL;
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS chunks_emb_idx ON chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS model_limits (
+  alias text PRIMARY KEY,
+  limit_tokens integer,
+  remaining_tokens integer,
+  blocked_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS chunks_team_idx ON chunks(team_id);
 
 CREATE TABLE IF NOT EXISTS memory_proposals (
@@ -361,3 +380,39 @@ BEGIN
 END $$;
 GRANT USAGE ON SCHEMA public TO app_scoped;
 GRANT SELECT ON sources, chunks TO app_scoped;
+
+-- v0.1.1: media, attachments, knowledge provenance, MCP secrets
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS created_by uuid;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'output';   -- input | output
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS extracted text;                         -- text pulled from an input file
+CREATE INDEX IF NOT EXISTS artifacts_team_idx ON artifacts(team_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts(task_id);
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]';
+
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS task_id uuid;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS step_id uuid;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS agent_id text;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS artifact_id uuid;
+CREATE INDEX IF NOT EXISTS sources_task_idx ON sources(task_id);
+
+CREATE TABLE IF NOT EXISTS media_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id uuid NOT NULL REFERENCES teams(id),
+  user_id uuid NOT NULL REFERENCES users(id),
+  kind text NOT NULL,                          -- speech | sound | music | image | video | diagram | transcribe
+  params jsonb NOT NULL DEFAULT '{}',
+  status text NOT NULL DEFAULT 'queued',       -- queued | running | completed | failed
+  progress text,
+  artifact_id uuid,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS secret_env jsonb NOT NULL DEFAULT '{}';   -- ENV_VAR -> credential provider
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS headers jsonb NOT NULL DEFAULT '{}';      -- header -> credential provider
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS context_env boolean NOT NULL DEFAULT false; -- pass team/project to server
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS seed_hash text;
