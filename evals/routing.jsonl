@@ -1,0 +1,30 @@
+{"text": "Write a Python function that validates email addresses, with tests", "agent": "coder"}
+{"text": "Implement a binary search in Python and test it", "agent": "coder"}
+{"text": "My pytest fails with KeyError in parse_config, fix the code", "agent": "coder"}
+{"text": "Create a CLI script that counts words in a file", "agent": "coder"}
+{"text": "Refactor this function to use dataclasses and add unit tests", "agent": "coder"}
+{"text": "Review this snippet for SQL injection: cursor.execute('SELECT * FROM users WHERE id=' + uid)", "agent": "reviewer"}
+{"text": "Is this code safe? yaml.load(request.data)", "agent": "reviewer"}
+{"text": "Do a security review of this Flask login handler", "agent": "reviewer"}
+{"text": "Check this Python diff for bugs and style problems", "agent": "reviewer"}
+{"text": "Draw a sequence diagram of a user logging in with OAuth", "agent": "diagrammer"}
+{"text": "Make a flowchart of our deployment pipeline: build, test, stage, prod", "agent": "diagrammer"}
+{"text": "Diagram the architecture of a web app with a load balancer, API servers, Redis and Postgres", "agent": "diagrammer"}
+{"text": "Create an ER diagram for customers, orders and products", "agent": "diagrammer"}
+{"text": "Research what retrieval-augmented generation is using https://en.wikipedia.org/wiki/Retrieval-augmented_generation and cite sources", "agent": "researcher"}
+{"text": "Find sources comparing HNSW and IVFFlat indexes and summarise with citations", "agent": "researcher"}
+{"text": "Fact-check the claim that Python 3.12 removed the GIL, citing sources", "agent": "researcher"}
+{"text": "Read https://www.python.org/about/ and give me cited key facts", "agent": "researcher"}
+{"text": "Make a 30-second audio summary of our release notes", "agent": "narrator"}
+{"text": "Narrate a short spoken intro for the weekly team update", "agent": "narrator"}
+{"text": "Turn this paragraph into speech", "agent": "narrator"}
+{"text": "Post 'standup moved to 10am' to the general channel", "agent": "ops"}
+{"text": "Add a team note that the API freeze starts Friday", "agent": "ops"}
+{"text": "What time is it in Tokyo right now?", "agent": "ops"}
+{"text": "Announce in #releases that v2.3 is live", "agent": "ops"}
+{"text": "Explain the difference between a process and a thread", "agent": "generalist"}
+{"text": "Summarise the key ideas of the CAP theorem", "agent": "generalist"}
+{"text": "Draft a polite email declining a meeting", "agent": "generalist"}
+{"text": "What is the difference between TCP and UDP?", "agent": "generalist"}
+{"text": "Give me three name ideas for an internal tool", "agent": "generalist"}
+{"text": "Explain Big-O notation with an example", "agent": "generalist"}

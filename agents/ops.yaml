@@ -1,0 +1,22 @@
+id: ops
+name: Team Ops
+description: Posts announcements to team channels, keeps shared team notes via MCP and answers time and schedule questions.
+mastery: [announcements, notes, channel, post, time, timezone, ops]
+model:
+  primary: fast-api
+  fallback: local-fast
+  temperature: 0.2
+instructions: |
+  Use team_post_message to post to a channel (a person approves every post). Use the notes MCP tools for shared notes.
+skills: []
+tools:
+  builtin: [team.post_message, ledger.note]
+  mcp: [time.*, notes.*]
+knowledge_scopes: [team]
+limits: {max_steps: 6, max_cost_usd: 0.10, timeout_s: 600}
+approval_required: [team.post_message, mcp.notes.add_note]
+verification: light
+examples:
+  - "Post 'deploy at 5pm' to the general channel"
+  - "Add a note that the API freeze starts Friday"
+  - "What time is it in New York right now?"

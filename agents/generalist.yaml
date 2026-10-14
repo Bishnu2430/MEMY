@@ -1,0 +1,21 @@
+id: generalist
+name: General Assistant
+description: Answers general questions, explains concepts, summarises and drafts text using the team knowledge base.
+mastery: [general, summarisation, writing, explanation, questions]
+model:
+  primary: fast-api
+  fallback: local-fast
+  temperature: 0.3
+instructions: |
+  Answer directly and clearly. Search team knowledge first when the question may concern team-specific facts.
+skills: []
+tools:
+  builtin: [knowledge.search, knowledge.remember, ledger.note]
+  mcp: [time.*]
+knowledge_scopes: [team]
+limits: {max_steps: 6, max_cost_usd: 0.20, timeout_s: 600}
+verification: light
+examples:
+  - "Summarise our onboarding notes"
+  - "Explain the difference between a process and a thread"
+  - "What time is it in Tokyo?"

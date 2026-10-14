@@ -1,0 +1,72 @@
+# Model gateway aliases. Agents name aliases, never concrete models, so swapping a model is
+# a config change here. Hosted aliases activate when api_key_env is set in .env (or a key is
+# stored encrypted via Admin > Credentials); otherwise the gateway walks the fallback chain.
+# Prices are approximate USD per 1M tokens, used for metering and budgets.
+models:
+  strong-api:
+    provider: openai_compat
+    base_url: https://api.groq.com/openai/v1
+    model: openai/gpt-oss-120b
+    api_key_env: GROQ_API_KEY
+    credential: groq
+    input_per_mtok: 0.15
+    output_per_mtok: 0.75
+    context: 131072
+    family: gpt-oss
+    extra: {reasoning_effort: low}
+    strict_json: true
+    prompt_budget_chars: 16000
+    fallback: [fast-api, reviewer-api]
+  fast-api:
+    provider: openai_compat
+    base_url: https://api.groq.com/openai/v1
+    model: openai/gpt-oss-20b
+    api_key_env: GROQ_API_KEY
+    credential: groq
+    input_per_mtok: 0.10
+    output_per_mtok: 0.50
+    context: 131072
+    family: gpt-oss
+    extra: {reasoning_effort: low}
+    strict_json: true
+    prompt_budget_chars: 16000
+    fallback: [strong-api, reviewer-api]
+  reviewer-api:
+    provider: openai_compat
+    base_url: https://api.groq.com/openai/v1
+    model: qwen/qwen3.8-27b
+    api_key_env: GROQ_API_KEY
+    credential: groq
+    input_per_mtok: 0.29
+    output_per_mtok: 0.59
+    context: 131072
+    family: qwen
+    extra: {reasoning_format: hidden}
+    prompt_budget_chars: 16000
+    fallback: [strong-api, fast-api]
+  local-fast:
+    provider: ollama
+    model: qwen2.5:3b
+    context: 8192
+    family: qwen-local
+  local-coder:
+    provider: ollama
+    model: qwen2.5:3b
+    context: 8192
+    family: qwen-local
+  # Role aliases
+  router:
+    alias_of: strong-api
+  supervisor:
+    alias_of: strong-api
+  verifier:
+    alias_of: reviewer-api
+  bulk:
+    alias_of: fast-api   # no GPU: bulk scoring on a cheap hosted model, local stays the fallback
+
+embedding:
+  provider: ollama
+  model: nomic-embed-text
+  dims: 768
+  document_prefix: "search_document: "
+  query_prefix: "search_query: "
