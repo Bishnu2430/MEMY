@@ -116,7 +116,10 @@ tr.row-warn td { background: var(--warn-soft); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; min-width: 0; }
 .main { overflow-x: hidden; }
-td { overflow-wrap: anywhere; }
+td { overflow-wrap: break-word; }
+td a, td .mono { overflow-wrap: anywhere; }
+.ok-chip { background: var(--ok-soft); color: var(--ok); }
+.model-id { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .card > h3:first-child { margin-bottom: 10px; }
 .warn-card { border-color: var(--warn); background: var(--warn-soft); }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
@@ -431,3 +434,4 @@ td .link, td .copy-btn { white-space: nowrap; }
 .quota { display: flex; flex-direction: column; gap: 10px; }
 .quota-row { display: grid; grid-template-columns: 150px 1fr 220px; gap: 12px; align-items: center; }
 @media (max-width: 700px) { .quota-row { grid-template-columns: 1fr; gap: 4px; } }
+.chip.ok-chip { background: var(--ok-soft); color: var(--ok); }

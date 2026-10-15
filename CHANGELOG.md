@@ -37,6 +37,13 @@
 - **Stop / Run again / Copy:** stop any unfinished task from chat, the task page or the live trace (running steps stop
   within seconds); run a finished task again with the same files; copy buttons on every code block, answer, file and
   raw event; download answers as Markdown and diagrams as SVG.
+- **Setup scripts:** `scripts/setup.sh` (macOS/Linux) and `scripts/setup.ps1` (Windows) check and optionally install
+  Docker, Git and uv, start the Docker engine, create `.env` with generated secrets (existing values kept), ask for API
+  keys with hidden input, build and start the stack and wait until it is healthy.
+- **README:** step-by-step installation per OS, API key setup (with the exact ElevenLabs permissions), a workflow
+  diagram of the orchestration, limits and quotas, troubleshooting.
+- **Daily quota awareness:** the gateway counts each model's last-24-hour tokens, routes around exhausted models, and
+  fails fast with a clear message when all are spent; Usage shows a daily quota meter per model.
 - **Team simulation:** `evals/simulate_ecommerce.py` — a four-person team (admin, two members, a viewer) builds a small
   e-commerce app through the API, with access checks, schedules, approvals and a generated report.
 
@@ -44,6 +51,12 @@
 - Themed dropdowns and team switcher replace native selects (readable in dark mode, keyboard accessible).
 - Steps can never outlive their task: an orchestrator sweep closes orphaned steps, and the live view only shows active work.
 - Agent edits check permission before validating input; invalid configuration returns a readable 400, never a 500.
+- Coding agents use their own model chain and a larger output allowance; prompts are fitted under each model's
+  per-request cap; truncated tool calls (output limit hit) are detected and never executed; Qwen's hidden reasoning is
+  disabled because it silently consumed the output budget; every retry gets a fresh checkpoint thread.
+- The sandbox keeps folder structure and `sandbox.test_project` runs a project's own test suite, which verification
+  also uses.
+- Table cells keep words whole (no more letter-by-letter wrapping in narrow columns); buttons never wrap.
 - Human-readable labels everywhere: tools, models, statuses, verification checks, actors, schedules (cron in plain
   language), audit actions; raw identifiers appear only as secondary detail.
 - Friendlier errors (server unreachable, wrong password, missing plan permissions) and confirmation for destructive actions.
