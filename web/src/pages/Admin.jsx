@@ -113,7 +113,16 @@ export default function Admin() {
           </div>
           <h3>Models</h3>
           <p className="muted small">Agents name a role (like Supervisor model); each role resolves to a hosted model and overflows to the others when rate-limited.</p>
-          <table><tbody>{models.map((m) => <tr key={m.alias}><td>{modelLabel(m.alias)}<div className="faint tiny">{m.alias}</div></td><td className="small">{m.provider} · {m.model}</td><td>{m.configured ? "Ready" : "No key"}</td><td className="small">uses {modelLabel(m.resolves_to)}</td></tr>)}</tbody></table>
+          <table>
+            <thead><tr><th>Role</th><th>Provider</th><th>Status</th><th title="The model this role is using right now">Currently uses</th></tr></thead>
+            <tbody>{models.map((m) => (
+              <tr key={m.alias}>
+                <td>{modelLabel(m.alias)}<div className="faint tiny">{m.alias}</div></td>
+                <td className="small">{m.provider}<div className="model-id" title={m.model}>{m.model?.split("/").pop()}</div></td>
+                <td><span className={`chip ${m.configured ? "ok-chip" : "warn-chip"}`}>{m.configured ? "Ready" : "No key"}</span></td>
+                <td className="small">{m.resolves_to ? modelLabel(m.resolves_to) : "—"}</td>
+              </tr>))}</tbody>
+          </table>
         </div>
       </div>
       <div className="card">

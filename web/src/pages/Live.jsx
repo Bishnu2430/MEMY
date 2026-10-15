@@ -53,10 +53,10 @@ export default function Live() {
             ))}
           </tbody></table>
           <h3>Models</h3>
-          <table><thead><tr><th>Model role</th><th>Provider · model</th><th>Status</th><th>Currently uses</th></tr></thead><tbody>
+          <table><thead><tr><th>Role</th><th>Provider</th><th>Status</th><th>Currently uses</th></tr></thead><tbody>
             {live.models.map((m) => (
-              <tr key={m.alias}><td>{modelLabel(m.alias)}<div className="faint tiny">{m.alias}</div></td><td className="small">{m.provider} · {m.model}</td>
-                <td>{m.configured ? "Ready" : "No key"}</td><td>{m.resolves_to ? modelLabel(m.resolves_to) : "—"}</td></tr>
+              <tr key={m.alias}><td>{modelLabel(m.alias)}<div className="faint tiny">{m.alias}</div></td><td className="small">{m.provider}<div className="model-id" title={m.model}>{m.model?.split("/").pop()}</div></td>
+                <td><span className={`chip ${m.configured ? "ok-chip" : "warn-chip"}`}>{m.configured ? "Ready" : "No key"}</span></td><td>{m.resolves_to ? modelLabel(m.resolves_to) : "—"}</td></tr>
             ))}
           </tbody></table>
         </div>
